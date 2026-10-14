@@ -8,6 +8,7 @@ import { notarizeMacOS } from './notarize-macos.mjs'
 import { packagingStep } from './packaging-step.mjs'
 import {
   resolveMacOSNotarizationEnvironment,
+  resolveDesktopPackageIdentity,
   resolveMacOSSigningEnvironment,
 } from './desktop-release-environment.mjs'
 import {
@@ -76,9 +77,10 @@ export async function packageMacOSArtifacts(
   const { arch, version, artifactsRoot, environment } = request
   const secrets = Object.entries(environment).filter(([name]) => /KEY|SECRET|TOKEN|PASSWORD|APPLE_ID/iu.test(name)).map(([, value]) => value ?? '')
   const expected = resolveMacOSSigningEnvironment(environment)
+  const identity = resolveDesktopPackageIdentity(environment)
   const credentials = resolveMacOSNotarizationEnvironment(environment)
   const update = resolveDesktopAutoUpdateConfig(environment, 'darwin', arch)
-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
+  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', `${identity.productName}.app`)
   const root = await mkdtemp(join(dirname(artifactsRoot), 'notarization-'))
   const zipApp = join(root, 'zip', basename(appPath))
   const dmgApp = join(root, 'dmg', basename(appPath))
@@ -110,7 +112,7 @@ export async function packageMacOSArtifacts(
     await verifyMacOSAppUpdateConfig(dmgApp, update)
     apple.verifySignature(zipApp, expected)
     apple.verifySignature(dmgApp, expected)
-    const base = `deepseek-harness-${version}-mac-${arch}`
+    const base = `${identity.artifactPrefix}-${version}-mac-${arch}`
     const artifacts = [
       [dmgOutput, `${base}.dmg`],
       [zipOutput, `${base}.zip`],

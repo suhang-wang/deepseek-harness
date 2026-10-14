@@ -1,0 +1,40 @@
+# Bilingual-pair consistency record for test-cases.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/enterprise/test-cases.md
+/:
+  en: ef6197feb0ddcae0
+  zh: 7db7602f13841268
+/enterprise-acceptance-test-cases:
+  en: d1977b0ae50b72c5
+  zh: e90424167397d432
+/enterprise-acceptance-test-cases/summary:
+  en: 015a1fe1415ebd89
+  zh: 532a5e7f1c6e8e6a
+/enterprise-acceptance-test-cases/table-of-contents:
+  en: e98963729d942e54
+  zh: a24d8aa781b0bb0e
+/enterprise-acceptance-test-cases/environment-and-evidence:
+  en: 65b4241be46ffc80
+  zh: 0d90b55c5e330ffd
+/enterprise-acceptance-test-cases/authentication:
+  en: af411430a02ea71f
+  zh: 366eda7dab6d56c6
+/enterprise-acceptance-test-cases/organization-and-policy:
+  en: 4834ed8fc099cd95
+  zh: 98f7b6a10920f4f7
+/enterprise-acceptance-test-cases/gateway-and-file-isolation:
+  en: e7569806a52a755f
+  zh: f638f3f58bd3cd46
+/enterprise-acceptance-test-cases/quota-and-failures:
+  en: 29339cf9a87d8448
+  zh: 5327ac440f8e6429
+/enterprise-acceptance-test-cases/administration-and-desktop-upgrades:
+  en: 1429fc2206eba164
+  zh: 053d7be6c3c589cd
+/enterprise-acceptance-test-cases/release-acceptance:
+  en: 2b41f2ef175d08e9
+  zh: 135f71ba0498491e
+/enterprise-acceptance-test-cases/dev-note:
+  en: 93f96bfa64530619
+  zh: 84ebaad4d0854776

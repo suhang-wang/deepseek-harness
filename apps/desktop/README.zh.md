@@ -104,6 +104,8 @@ Welcome 加载共享 Toast 的配色和阴影变量，挂载在 body 下的通�
 
 Electron 拥有 `$DSH_HOME/profiles/desktop`。其 `dependencies` 包含 pnpm 安装的包；`dsh.profile.bundles` 包含内置 bundle，后接已启用插件。签名应用从 `resources/app.asar/dsh` 提供 dsh、私有 Desktop Host 及其生产依赖。打包应用选择 runtime profile 解析，不创建包链接；开发 profile 使用文件系统链接。宿主与插件在同一个 Electron Node 模式进程中执行；Desktop 不启用 `--preserve-symlinks`。CLI 不能启动此 profile。Desktop 内置命令可在应用退出后管理其插件；npm 安装的 dsh 不能修改它。
 
+Host identity adapter 通过私有进程 IPC channel 发送 `secure-store-request` 消息，读写 `refresh`、`logout-capability`、`employee-id` 和待撤销队列。Electron 将活动会话的替换或清理与待撤销队列分开原子提交，使用 `safeStorage` 加密记录，并仅在应用 user-data 目录持久化密文。该存储要求 macOS Keychain 可用；不会回退到明文，也不会向 renderer 暴露存储接口。Host 通过独立私有 IPC 发送经过校验的 HTTPS 授权地址，由 Electron 调用系统浏览器打开。两类请求都使用 10 秒超时，错误信息会脱敏。
+
 应用 preload 只向 `dsh-app://app` 文档暴露启动就绪、致命启动失败上报、原生目录选择、用于 composer 路径引用的 `__DSH_HOST_PATHS__` 桥接和租约范围内的 Browser 桥接。同一个 preload 通过 `dshDesktop.deviceInfo()` 转发主进程采集的机器描述，按 `name=value` 字段以 `; ` 分隔：`platform`、`os`、`app_arch`（应用二进制实际运行的架构，模拟运行时与硬件架构不同）、`cpu` 和 `memory_gib`（物理内存总量，GiB，保留一位小数）。取值不可用时省略对应字段。该描述不包含主机名、用户名或序列号。产品页面还获得 Desktop 标记、更新展示数据和打开原生确认的操作，不能选择安装产物或授权安装。插件管理使用 Web 应用经过认证的 HTTP API；Electron 在 `dsh-app://shell/` 本地提供更新弹窗文档和资源，不依赖 Host 就绪。Electron 不提供插件管理 IPC 或独立管理页面。任何渲染进程都不会获得文件系统访问、原始 Electron IPC、shell 或任意 pnpm 参数。
 
 只有主应用窗口启用 `<webview>`。guest 挂载必须匹配主进程签发的租约和分区；guest 保持 sandbox、context isolation 和 Web security，不启用 Node integration 或 guest preload。Browser IPC 监听只为应用文档创建。[Sidebar Browser](../../packages/client/ui-sidebar-browser/README.zh.md) 说明存储分组和 guest 限制；Host 鉴权仍独立于 URL 过滤而必需。
@@ -143,6 +145,8 @@ macOS 上自定义菜单保留 Electron 的标准 Window 菜单及应用隐藏�
 恢复操作等待 Host 关闭后才修改插件启用状态。原生恢复操作在 profile 事务锁内调用共享 app-boot 恢复函数。它禁用第三方 bundle，并将 profile 的 `cordis.patch.yml` 重命名为 `cordis.patch.yml.bak-<timestamp>`（重名时追加序号），无需解析；下次启动创建空 patch。已安装包和已有备份保留。home 级 patch 不变。Electron 控制台记录备份路径（或原文件不存在）以及 home 级 patch 未修改。profile 数据无效、重命名失败或写入失败会作为恢复操作错误报告；已完成的修改保留，Desktop 不会假装恢复成功后重启。Desktop 不提供 profile 重置操作或应急 HTML 文档。
 
 ### Host 环境
+
+私有 Host 启动参数分别传入 primary-runtime 路径、可选的 pnpm 与 Node-bin 路径对，以及可选的获准 Host 插件清单。未提供包管理器路径对时，包操作不配置专用运行器；插件清单不会被当作 pnpm 路径。
 
 macOS 和 Linux 从图形界面启动的程序只继承会话管理器提供的环境，不包含 shell 启动文件导出的变量。第一个 Host 启动之前，Desktop 以 `<shell> -ilc` 运行一次账户的登录 shell（取自用户数据库，不看 `$SHELL`），读取定界符之间的 `env -0` 输出，使 `~/.zprofile` 和 `~/.zshrc`（或该 shell 的对应文件）对 Host、agent shell、终端和 profile 配置生效。读取与 profile 准备并行进行。读取进程没有终端输入，并设置 `DISABLE_AUTO_UPDATE=true`、`ZSH_TMUX_AUTOSTARTED=true` 和 `ZSH_TMUX_AUTOSTART=false`，避免 oh-my-zsh 和 tmux 插件阻塞。shell 的值覆盖继承的值，但 `PWD`、`OLDPWD`、`SHLVL`、`_`、上述读取变量以及启动方自有的 `DSH_*` 和 `ELECTRON_*` 除外；Desktop 在读取之前已按 `DSH_HOME` 等变量解析路径，因此 Host 保持相同的值。读取在结束定界符出现时完成，因此启动文件启动的后台进程可以继续运行，其输出被丢弃。候选 shell 无法启动、以非零状态退出、没有输出定界内容或超过 `DSH_DESKTOP_LOGIN_SHELL_TIMEOUT_MS`（1000 到 2147483647 的整数毫秒，默认 `10000`；超时会结束其进程组）时，Desktop 记录一条警告，并依次尝试 `/bin/zsh`、`/bin/bash` 和 `/bin/sh`；全部失败时 Host 使用继承的环境。读取命令使用 POSIX 语法，因此 csh、tcsh 或 nushell 等账户 shell 会失败，Host 改为获得第一个系统 shell 的启动文件所设置的环境。读取期间退出 Desktop 会结束正在运行的读取进程组。每个应用进程只读取一次，因此修改 shell 启动文件后需要退出并重新打开 Desktop。Windows 从图形界面启动的程序已经从注册表继承用户和系统环境变量，因此 Windows 跳过这一步。
 
@@ -257,6 +261,22 @@ pnpm run package:desktop:mac:x64:unsigned
 添加 `--check` 仅验证本地配置和工具而不构建，或添加 `--dir` 只生成解包应用。DMG 路径为 `apps/desktop/.desktop-build/targets/<target>/unsigned-artifacts/deepseek-harness-<version>-mac-<arch>-unsigned.dmg`。所有检查通过后，命令打印 `DMG:` 及其绝对路径。打开后将应用复制到本地测试目录。
 
 这些命令忽略 `.env.macos` 和继承的发布配置，使用 `com.deepseek.harness` 作为应用 ID，并省略自动更新和强制更新配置。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。准备阶段和组装后的应用仍执行运行时完整性与冒烟检查。本地构建不生成更新源、ZIP 或发布完成记录，上传命令无法发布这些产物。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
+
+### 本地企业组合包准备
+
+在本仓库中，将相邻企业仓库和获准的企业服务地址明确传给 macOS arm64 打包命令：
+
+```sh
+pnpm run package:desktop:mac:arm64:unsigned -- --dir --enterprise-packages ../deepseek-harness-enterprise --enterprise-service-origin https://127.0.0.1:3443
+```
+
+该命令构建企业工作区，打包身份、模型提供方、界面及组合包四个包，并将组合包依赖闭包纳入 Desktop 包集合。它把 HTTPS 服务地址封入打包运行时描述文件，解包应用位于 `apps/desktop/.desktop-build/enterprise/targets/mac-arm64/unsigned-artifacts/mac-arm64/DeepSeek Harness Enterprise.app`；准备文件留在同一企业目标目录。未签名企业包使用临时应用 ID `com.deepseek.harness.enterprise.local`、产品名 `DeepSeek Harness Enterprise`、`dsh-enterprise` URL 协议和独立产物名称。打包清单写入 `dshDesktopEdition=enterprise`。服务地址必须是无凭据、路径、查询和片段的规范 HTTPS origin。本地 Host 冒烟使用合成配置和服务，不能证明真实企业微信登录。
+
+企业欢迎窗展示企业微信登录二维码，并自动查询同一次授权尝试；流程及浏览器备用入口见[认证设计](../../docs/enterprise/technical-design.zh.md#authentication)。
+
+签名的 macOS arm64 企业包沿用两个企业参数，但不加 `--unsigned`。它从 `.env.macos` 读取企业发行方拥有的显式反向域名 `DSH_DESKTOP_APP_ID`、Developer ID 签名、公证凭据和 `DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN`。签名构建拒绝普通版 `com.deepseek.harness` 命名空间及临时企业 ID。它要求显式企业 HTTPS 更新源，使用 `dsh-enterprise/` 路径而非普通版的 `dsh-desk/`，并拒绝 `download.deepseek.com`。发行前须核实标识和更新源所有权；构建只能校验格式和隔离，不能证明域名所有权。企业更新发布和版本窗口资格验证由后续更新 Feature 完成。真实企业微信登录仍需可信回调域名及获批的企业微信凭据。
+
+打包后的 Desktop 和 Host 使用已封存描述文件中的地址，覆盖继承的 shell 环境或 dotenv 值；身份及模型提供方配置若指向其他地址，会在插件加载前使启动失败。
 
 ### 用回环 registry 安装本地 Official 包
 

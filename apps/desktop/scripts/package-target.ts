@@ -18,7 +18,7 @@ import { withMacOSSigningKeychain } from './macos-signing-keychain.mjs'
 import { macOSDownloadEnvironment, resolveMacOSPackageSettings } from './macos-package-settings.mjs'
 import { packagingErrorDetails, packagingStep } from './packaging-step.mjs'
 import { notarizeMacOS } from './notarize-macos.mjs'
-import { resolveMacOSNotarizationEnvironment } from './desktop-release-environment.mjs'
+import { resolveDesktopPackageIdentity, resolveMacOSNotarizationEnvironment } from './desktop-release-environment.mjs'
 import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
 import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts'
 import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
@@ -27,6 +27,9 @@ import { withMacOSNotarizationProxy } from './macos-notarization-proxy.ts'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
+const ENTERPRISE_PACKAGE_NAMES = [
+  'harness-identity', 'harness-provider', 'harness-ui', 'harness-bundle',
+] as const
 const WINDOWS_SIGNING_ENV_PREFIX = 'DSH_DESKTOP_WINDOWS_'
 const WINDOWS_SIGNING_ENV_NAMES = [
   'DSH_DESKTOP_WINDOWS_CER_FILE',
@@ -199,6 +202,31 @@ interface DesktopPackageInvocation {
   readonly check: boolean
   /** Build identifier to publish under, when this build does not publish the product version. */
   readonly requestedBuildVersion: string | undefined
+  readonly enterprise: { readonly packagesRoot: string; readonly serviceOrigin: string } | undefined
+}
+
+function enterpriseServiceOrigin(value: string): string {
+  let url: URL
+  try { url = new URL(value) }
+  catch { throw new Error('desktop package: --enterprise-service-origin requires a canonical HTTPS origin') }
+  if (url.protocol !== 'https:' || url.origin !== value || url.username !== '' || url.password !== '') {
+    throw new Error('desktop package: --enterprise-service-origin requires a canonical HTTPS origin')
+  }
+  return value
+}
+
+function enterprisePackageRoot(value: string): string {
+  const root = resolve(REPOSITORY_ROOT, value)
+  for (const packageName of ENTERPRISE_PACKAGE_NAMES) {
+    const path = join(root, 'packages', packageName, 'package.json')
+    let manifest: { name?: unknown }
+    try { manifest = JSON.parse(readFileSync(path, 'utf8')) as { name?: unknown } }
+    catch { throw new Error(`desktop package: enterprise input omits packages/${packageName}/package.json`) }
+    if (manifest.name !== `@dsh-enterprise/${packageName}`) {
+      throw new Error(`desktop package: enterprise input packages/${packageName} has unexpected package name`)
+    }
+  }
+  return root
 }
 
 function hostTargetName(platform: NodeJS.Platform, arch: string): DesktopPackageTargetName {
@@ -230,6 +258,8 @@ export function parseDesktopPackageInvocation(
       unsigned: { type: 'boolean', default: false },
       check: { type: 'boolean', default: false },
       'build-version': { type: 'string' },
+      'enterprise-packages': { type: 'string' },
+      'enterprise-service-origin': { type: 'string' },
     },
   })
   if (positionals.length > 1) throw new Error('desktop package: expected at most one target')
@@ -239,6 +269,16 @@ export function parseDesktopPackageInvocation(
   if (values['build-version'] !== undefined && (requestedBuildVersion === undefined || requestedBuildVersion === '')) {
     throw new Error('desktop package: --build-version requires a value')
   }
+  const enterpriseRequested = values['enterprise-packages'] !== undefined || values['enterprise-service-origin'] !== undefined
+  if (enterpriseRequested && !values['enterprise-packages']?.trim()) {
+    throw new Error('desktop package: --enterprise-packages is required with --enterprise-service-origin')
+  }
+  if (enterpriseRequested && !values['enterprise-service-origin']?.trim()) {
+    throw new Error('desktop package: --enterprise-service-origin is required with --enterprise-packages')
+  }
+  if (enterpriseRequested && name !== 'mac-arm64') {
+    throw new Error('desktop package: enterprise packaging currently supports mac-arm64 only')
+  }
   return {
     target: resolveDesktopPackageTarget(name, hostPlatform, hostArch),
     directory: values.dir,
@@ -246,6 +286,10 @@ export function parseDesktopPackageInvocation(
     unsigned: values.unsigned,
     check: values.check,
     requestedBuildVersion,
+    enterprise: enterpriseRequested ? {
+      packagesRoot: enterprisePackageRoot(values['enterprise-packages']!),
+      serviceOrigin: enterpriseServiceOrigin(values['enterprise-service-origin']!),
+    } : undefined,
   }
 }
 
@@ -320,7 +364,7 @@ async function resolveRequestedBuildVersion(
   const requested = invocation.requestedBuildVersion
   if (requested === undefined) return productVersion
   if (requested !== AUTOMATIC_BUILD_VERSION) return validateDesktopBuildVersion(requested, productVersion)
-  const paths = desktopTargetBuildPaths(invocation.target.name)
+  const paths = desktopTargetBuildPaths(invocation.target.name, invocation.enterprise === undefined ? 'official' : 'enterprise')
   return suggestDesktopBuildVersion({
     productVersion, target: invocation.target.name, environment,
     // Unsigned builds land beside the signed output, so numbering has to read the directory this run writes.
@@ -332,8 +376,16 @@ async function main(): Promise<void> {
   const invocation = parseDesktopPackageInvocation(process.argv.slice(2))
   const { target } = invocation
   const environment = target.platform === 'darwin' && invocation.unsigned
-    ? localMacOSPackageEnvironment()
+    ? localMacOSPackageEnvironment(process.env, invocation.enterprise === undefined ? 'official' : 'enterprise')
     : loadDesktopPackageEnvironment(target.platform)
+  // The edition and service origin are selected only by explicit command arguments.
+  delete environment.DSH_DESKTOP_ENTERPRISE_MODE
+  delete environment.DSH_ENTERPRISE_SERVICE_ORIGIN
+  if (invocation.enterprise !== undefined) {
+    environment.DSH_DESKTOP_ENTERPRISE_MODE = '1'
+    environment.DSH_ENTERPRISE_SERVICE_ORIGIN = invocation.enterprise.serviceOrigin
+  }
+  const identity = resolveDesktopPackageIdentity({ ...environment, DSH_DESKTOP_UNSIGNED: invocation.unsigned ? '1' : '0' })
   const productVersion = packageVersion(join(APP_ROOT, 'package.json'), 'desktop package')
   // Release settings come from the target dotenv file alone, so the version this run publishes is an
   // argument; the environment variable below only carries it to the child processes that build.
@@ -351,6 +403,7 @@ async function main(): Promise<void> {
   const secrets = Object.entries(environment).filter(([name]) => /KEY|SECRET|TOKEN|PASSWORD|APPLE_ID/iu.test(name)).map(([, value]) => value ?? '')
   const run = createPackagingRun(join(APP_ROOT, '.desktop-build', 'packaging-runs'), {
     target: target.name, unsigned: invocation.unsigned, directory: invocation.directory, prepareOnly: invocation.prepareOnly,
+    edition: invocation.enterprise === undefined ? 'official' : 'enterprise',
     version: buildVersion, productVersion, node: process.version,
     commit: packaged.commit,
     dirty: packaged.dirty,
@@ -384,8 +437,8 @@ async function main(): Promise<void> {
     run.finish(success)
   }
   if (success && target.platform === 'darwin' && !invocation.directory && !invocation.prepareOnly) {
-    const paths = desktopTargetBuildPaths(target.name)
-    const filename = `deepseek-harness-${buildVersion}-mac-${target.arch}${invocation.unsigned ? '-unsigned' : ''}.dmg`
+    const paths = desktopTargetBuildPaths(target.name, invocation.enterprise === undefined ? 'official' : 'enterprise')
+    const filename = `${identity.artifactPrefix}-${buildVersion}-mac-${target.arch}${invocation.unsigned ? '-unsigned' : ''}.dmg`
     console.log(`DMG: ${join(invocation.unsigned ? paths.unsignedArtifacts : paths.artifacts, filename)}`)
   }
 }
@@ -408,7 +461,7 @@ export async function packageTarget(
   const proxyEvent = (status: string) => { if (journal) recordPackagingEvent(journal, { type: 'notarization-proxy', status }) }
   const mac = target.platform === 'darwin' ? resolveMacOSPackageSettings(environment) : undefined
   const packArguments = mac === undefined ? [] : ['--concurrency', String(mac.packConcurrency)]
-  const buildPaths = desktopTargetBuildPaths(target.name)
+  const buildPaths = desktopTargetBuildPaths(target.name, invocation.enterprise === undefined ? 'official' : 'enterprise')
   const releaseRecordPath = join(buildPaths.artifacts, desktopBuildRecordFilename(target.name))
   if (!invocation.prepareOnly && !invocation.unsigned) {
     rmSync(releaseRecordPath, { force: true })
@@ -416,6 +469,12 @@ export async function packageTarget(
   }
   const buildEnv = withoutWindowsSigningEnvironment(withoutDesktopUploadCredentials(
     desktopElectronBuilderEnvironment(environment, invocation.unsigned)))
+  delete buildEnv.DSH_DESKTOP_ENTERPRISE_MODE
+  delete buildEnv.DSH_ENTERPRISE_SERVICE_ORIGIN
+  if (invocation.enterprise !== undefined) {
+    buildEnv.DSH_DESKTOP_ENTERPRISE_MODE = '1'
+    buildEnv.DSH_ENTERPRISE_SERVICE_ORIGIN = invocation.enterprise.serviceOrigin
+  }
   const targetEnv: NodeJS.ProcessEnv = {
     ...buildEnv,
     DSH_DESKTOP_TARGET_PLATFORM: target.platform,
@@ -465,6 +524,17 @@ export async function packageTarget(
     buildPaths.packedDsh,
   ], buildEnv, REPOSITORY_ROOT)
   await execute(['run', 'release:pack', '--family', 'vendor', '--out', buildPaths.packedVendor, ...packArguments], buildEnv, REPOSITORY_ROOT)
+  if (invocation.enterprise !== undefined) {
+    const enterpriseRoot = invocation.enterprise.packagesRoot
+    await execute(['run', 'build'], buildEnv, enterpriseRoot)
+    rmSync(buildPaths.packedEnterprise, { recursive: true, force: true })
+    mkdirSync(buildPaths.packedEnterprise, { recursive: true })
+    for (const packageName of ENTERPRISE_PACKAGE_NAMES) {
+      await execute([
+        '--dir', join('packages', packageName), 'pack', '--pack-destination', buildPaths.packedEnterprise,
+      ], buildEnv, enterpriseRoot)
+    }
+  }
   rmSync(buildPaths.packedLandlock, { recursive: true, force: true })
   mkdirSync(buildPaths.packedLandlock, { recursive: true })
   await execute(['--dir', 'native/system', 'run', 'build:ts'], buildEnv, REPOSITORY_ROOT)
@@ -497,7 +567,8 @@ export async function packageTarget(
   } else if (target.platform === 'darwin' && !invocation.unsigned) {
     await execute([...desktopElectronBuilderArguments(target, true), '--config.mac.notarize=false'], electronBuilderEnv)
     await execute(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts'], targetEnv)
-    const appPath = join(buildPaths.artifacts, target.arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
+    const appPath = join(buildPaths.artifacts, target.arch === 'arm64' ? 'mac-arm64' : 'mac',
+      `${resolveDesktopPackageIdentity(electronBuilderEnv).productName}.app`)
     await withMacOSNotarizationProxy(mac?.notarizationProxy,
       () => notarizeMacOS({ appPath, ...resolveMacOSNotarizationEnvironment(environment) }), undefined, undefined, proxyEvent)
   } else {

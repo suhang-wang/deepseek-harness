@@ -3,11 +3,24 @@ import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-acc
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { resolveDesktopLocale } from './locale.ts'
-import { WELCOME_IPC, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
+import { ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseLoginResult, type EnterpriseWelcomeApi, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
+import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 
 const prefix = '--dsh-welcome-locale='
 const locale = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length)
 if (locale === undefined) throw new Error('desktop welcome: missing window locale')
+const mode = process.argv.includes('--dsh-welcome-mode=enterprise') ? 'enterprise' : 'official'
+if (mode === 'enterprise') {
+  const enterpriseApi: EnterpriseWelcomeApi = {
+    ...resolveDesktopLocale(locale),
+    mode: 'enterprise',
+    read: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.read) as Promise<EnterpriseIdentityState>,
+    beginLogin: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.begin) as Promise<{ readonly attemptId: string }>,
+    beginQrLogin: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.beginQr) as Promise<{ readonly attemptId: string; readonly qrUrl: string }>,
+    finishLogin: (attemptId: string) => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.finish, attemptId) as Promise<EnterpriseLoginResult>,
+  }
+  contextBridge.exposeInMainWorld('dshEnterpriseWelcome', enterpriseApi)
+} else {
 const api: WelcomeApi = {
   ...resolveDesktopLocale(locale),
   analytics: async (eventName, attributes) => {
@@ -27,3 +40,4 @@ const api: WelcomeApi = {
   skip: () => ipcRenderer.invoke(WELCOME_IPC.skip) as Promise<void>,
 }
 contextBridge.exposeInMainWorld('dshWelcome', api)
+}

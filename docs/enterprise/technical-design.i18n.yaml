@@ -1,0 +1,43 @@
+# Bilingual-pair consistency record for technical-design.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/enterprise/technical-design.md
+/:
+  en: 017c5d0c7b68a029
+  zh: 47d3528d7fb9caee
+/enterprise-technical-design:
+  en: f6b490ebb5a150c0
+  zh: 0019d34a084b0d92
+/enterprise-technical-design/summary:
+  en: 14fea561656794ef
+  zh: eda2936bb169f453
+/enterprise-technical-design/table-of-contents:
+  en: 7cef65b67da7bfd1
+  zh: b0a1e0cc0e34b5f6
+/enterprise-technical-design/components-and-trust:
+  en: d789dd2aeed1f0b4
+  zh: c3712fbbc5db690d
+/enterprise-technical-design/desktop-authentication:
+  en: 32fd89a19acd73db
+  zh: e68cdee92bb0a815
+/enterprise-technical-design/organization-synchronization:
+  en: 69e8ae213a376d1f
+  zh: ab31dc2c4ec57cd1
+/enterprise-technical-design/policy-resolution:
+  en: 03ff3a4a9d53af5e
+  zh: 5b1aba5d3160d86a
+/enterprise-technical-design/messages-and-files-gateway:
+  en: a49ad9a73ce95d62
+  zh: 32380977cc1230e9
+/enterprise-technical-design/quota-ledger:
+  en: 7a7c22bf9e91bd2c
+  zh: 505cc356dc6ba274
+/enterprise-technical-design/data-and-apis:
+  en: 8f3972c0a403d719
+  zh: 9a4e5d8733e3d8de
+/enterprise-technical-design/security-and-operations:
+  en: 1de998ed5b40fd92
+  zh: ff7d383a7fc5ba83
+/enterprise-technical-design/dev-note:
+  en: 9f0007e6559f3856
+  zh: d7beeb4cf7baea6a

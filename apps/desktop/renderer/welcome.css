@@ -341,3 +341,55 @@ body {
 .actions .welcome-loading { color: inherit; }
 
 .auth-waiting .copy-link:disabled { cursor: default; }
+
+.enterprise-welcome-content {
+  grid-row: 2;
+  grid-column: 1;
+  width: min(100%, 440px);
+  text-align: center;
+  font-family: var(--dsw-font-family);
+}
+
+.enterprise-welcome {
+  grid-template-rows: 40px minmax(0, 1fr) 72px;
+  padding-bottom: 48px;
+}
+
+.enterprise-welcome .enterprise-welcome-content {
+  align-self: start;
+  margin-top: 24px;
+}
+
+.enterprise-welcome-content h1 {
+  margin: 0 0 16px;
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.enterprise-welcome-content p {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.enterprise-welcome-content .enterprise-welcome-hint { margin-top: 12px; font-size: 14px; }
+
+.enterprise-login-qr-frame {
+  width: 280px;
+  height: 300px;
+  margin: 18px auto 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.enterprise-login-qr {
+  display: block;
+  width: 400px;
+  height: 430px;
+  border: 0;
+  transform: scale(0.7);
+  transform-origin: top left;
+  app-region: no-drag;
+}

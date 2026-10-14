@@ -31,17 +31,20 @@ function fixture() {
   })
   onTestFinished(() => { stderr.mockRestore() })
 
-  function plugin(name: string, options: { version?: string; peer?: string; alias?: string } = {}): void {
+  function plugin(name: string, options: { version?: string; peer?: string; alias?: string;
+    dependencies?: Record<string, string>; recordConfig?: boolean } = {}): void {
     const packageDir = join(dir, 'node_modules', options.alias ?? name)
     mkdirSync(packageDir, { recursive: true })
     writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
       name, version: options.version ?? '1.0.0', type: 'module', exports: './index.mjs',
+      ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }),
       ...options.peer === undefined ? {} : { peerDependencies: { '@deepseek-ai/dsh-test': options.peer } },
     }))
     writeFileSync(join(packageDir, 'index.mjs'), `import { appendFileSync } from 'node:fs'
 const record = (value) => appendFileSync(new URL('${pathToFileURL(effects).href}'), value + '\\n')
 record('import:${name}')
-export function apply() { record('apply:${name}') }
+export function apply(_ctx, config) { record('apply:${name}')
+  ${options.recordConfig ? "record('origin:' + config.serviceOrigin)" : ''} }
 `)
   }
 
@@ -59,9 +62,15 @@ export function apply() { record('apply:${name}') }
   exemptions({})
 
   /** Boot the profile with these patches and return the recorded plugin effects. */
-  async function run(patches: PatchOptions[], packages = false): Promise<string[]> {
+  async function run(patches: PatchOptions[], packages = false,
+    allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+    trustedHostPackages = allowedHostPlugins, enterpriseServiceOrigin?: string): Promise<string[]> {
     ctx = await boot('preflight', configPath, patches, async (host) => {
-      host.provide('profileContext', profile)
+      host.provide('profileContext', { ...profile,
+        ...(allowedHostPlugins === undefined ? {} : { allowedHostPlugins }),
+        ...(trustedHostPackages === undefined ? {} : { trustedHostPackages }),
+        ...(enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin }),
+      })
       if (packages) await host.plugin(PluginPackages)
       host.logger.exporter({ levels: { default: 3 }, export(message) {
         if (message.type === 'warn' || message.type === 'error') warnings.push(String(message.args[0]))
@@ -83,6 +92,156 @@ it('blocks an incompatible plugin before its module is imported while a compatib
   expect(effects).toEqual(['import:allowed-plugin', 'apply:allowed-plugin'])
   expect(f.warnings.join('\n')).toContain('denied-plugin@1.0.0')
   expect(f.warnings.join('\n')).toContain('data loss')
+})
+
+it('rejects an effective enterprise identity or provider origin before importing any plugin', async () => {
+  for (const name of ['@dsh-enterprise/harness-identity', '@dsh-enterprise/harness-provider']) {
+    const f = fixture()
+    f.plugin(name)
+    const allowed = [{ name, version: '1.0.0', path: join(f.dir, 'node_modules', name) }]
+    await expect(f.run([{ insert: [{ id: 'enterprise', name, config: { serviceOrigin: 'https://attacker.example.test' } }] }],
+      true, allowed, allowed, 'https://enterprise.example.test')).rejects.toThrow('signed enterprise service origin')
+    expect(existsSync(join(f.dir, 'effects'))).toBe(false)
+  }
+})
+
+it('rejects an origin changed by the final user patch after the enterprise bundle', async () => {
+  const f = fixture()
+  const name = '@dsh-enterprise/harness-identity'
+  f.plugin(name)
+  const allowed = [{ name, version: '1.0.0', path: join(f.dir, 'node_modules', name) }]
+  await expect(f.run([
+    { insert: [{ id: 'enterprise-identity', name, config: { serviceOrigin: { __jsExpr: 'process.env.DSH_ENTERPRISE_SERVICE_ORIGIN' } } }] },
+    { id: 'enterprise-identity', config: { serviceOrigin: 'https://attacker.example.test' } },
+  ], true, allowed, allowed, 'https://enterprise.example.test')).rejects.toThrow('signed enterprise service origin')
+  expect(existsSync(join(f.dir, 'effects'))).toBe(false)
+})
+
+it('allows enterprise origin rows only with a matching literal or the canonical launch expression', async () => {
+  const f = fixture()
+  const name = '@dsh-enterprise/harness-provider'
+  f.plugin(name, { recordConfig: true })
+  const allowed = [{ name, version: '1.0.0', path: join(f.dir, 'node_modules', name) }]
+  const previous = process.env.DSH_ENTERPRISE_SERVICE_ORIGIN
+  process.env.DSH_ENTERPRISE_SERVICE_ORIGIN = 'https://attacker.example.test'
+  try {
+    expect(await f.run([{ insert: [{ id: 'expression', name,
+      config: { serviceOrigin: { __jsExpr: 'process.env.DSH_ENTERPRISE_SERVICE_ORIGIN' } } }] }],
+    true, allowed, allowed, 'https://enterprise.example.test')).toEqual([
+      `import:${name}`, `apply:${name}`, 'origin:https://enterprise.example.test',
+    ])
+  } finally {
+    if (previous === undefined) delete process.env.DSH_ENTERPRISE_SERVICE_ORIGIN
+    else process.env.DSH_ENTERPRISE_SERVICE_ORIGIN = previous
+  }
+})
+
+it('blocks an unapproved Host plugin before import while an allowlisted package loads', async () => {
+  const f = fixture()
+  f.plugin('approved-plugin')
+  f.plugin('employee-installed-plugin')
+
+  expect(await f.run(insert('approved-plugin', 'employee-installed-plugin'), true, [{ name: 'approved-plugin', version: '1.0.0', path: join(f.dir, 'node_modules/approved-plugin') }]))
+    .toEqual(['import:approved-plugin', 'apply:approved-plugin'])
+  expect(f.warnings.join('\n')).toContain('employee-installed-plugin')
+  expect(f.warnings.join('\n')).toContain('not in the approved Host plugin allowlist')
+})
+
+it('requires every declared Host dependency to resolve to a signed package record', async () => {
+  const f = fixture()
+  f.plugin('approved-plugin', { dependencies: { 'employee-installed-dependency': '^1.0.0' } })
+  f.plugin('employee-installed-dependency')
+  const approved = [{ name: 'approved-plugin', version: '1.0.0', path: join(f.dir, 'node_modules/approved-plugin') }]
+  const signed = [...approved, {
+    name: 'employee-installed-dependency', version: '1.0.0', path: join(f.dir, 'node_modules/employee-installed-dependency'),
+  }]
+  expect(await f.run(insert('approved-plugin'), true, approved, approved)).toEqual([])
+  expect(f.warnings.join('\n')).toContain('outside the signed Host runtime package set')
+  expect(await f.run(insert('approved-plugin'), true, approved, signed)).toEqual([
+    'import:approved-plugin', 'apply:approved-plugin',
+  ])
+})
+
+it('admits duplicate dependency names only when each resolved package path is signed', async () => {
+  const f = fixture()
+  f.plugin('approved-plugin', { dependencies: { 'first-b': '^1.0.0', 'first-a': '^1.0.0' } })
+  f.plugin('first-a', { dependencies: { shared: '^2.0.0' } })
+  f.plugin('first-b', { dependencies: { shared: '^4.0.0' } })
+  f.plugin('shared', { version: '4.4.3' })
+  f.plugin('shared', { version: '2.6.9', alias: 'first-a/node_modules/shared' })
+  const path = (name: string) => join(f.dir, 'node_modules', name)
+  const approved = [{ name: 'approved-plugin', version: '1.0.0', path: path('approved-plugin') }]
+  const signed = [...approved,
+    { name: 'first-a', version: '1.0.0', path: path('first-a') },
+    { name: 'first-b', version: '1.0.0', path: path('first-b') },
+    { name: 'shared', version: '4.4.3', path: path('shared') },
+    { name: 'shared', version: '2.6.9', path: path('first-a/node_modules/shared') },
+  ]
+
+  expect(await f.run(insert('approved-plugin'), true, approved, signed)).toEqual([
+    'import:approved-plugin', 'apply:approved-plugin',
+  ])
+})
+
+it('rejects an unsigned nested package even when its name and version match a signed sibling', async () => {
+  const f = fixture()
+  f.plugin('approved-plugin', { dependencies: { 'first-b': '^1.0.0', 'first-a': '^1.0.0' } })
+  f.plugin('first-a', { dependencies: { shared: '^1.0.0' } })
+  f.plugin('first-b', { dependencies: { shared: '^1.0.0' } })
+  f.plugin('shared')
+  f.plugin('shared', { alias: 'first-a/node_modules/shared' })
+  const path = (name: string) => join(f.dir, 'node_modules', name)
+  const approved = [{ name: 'approved-plugin', version: '1.0.0', path: path('approved-plugin') }]
+  const signed = [...approved,
+    { name: 'first-a', version: '1.0.0', path: path('first-a') },
+    { name: 'first-b', version: '1.0.0', path: path('first-b') },
+    { name: 'shared', version: '1.0.0', path: path('shared') },
+  ]
+
+  expect(await f.run(insert('approved-plugin'), true, approved, signed)).toEqual([])
+  expect(f.warnings.join('\n')).toContain('outside the signed Host runtime package set')
+})
+
+it('fails closed for an unresolved plugin under an approved Host plugin policy', async () => {
+  const f = fixture()
+  f.plugin('approved-plugin')
+
+  expect(await f.run(insert('approved-plugin', 'unresolved-plugin'), true, [{ name: 'approved-plugin', version: '1.0.0', path: join(f.dir, 'node_modules/approved-plugin') }]))
+    .toEqual(['import:approved-plugin', 'apply:approved-plugin'])
+  expect(f.warnings.join('\n')).toContain('unresolved-plugin')
+  expect(f.warnings.join('\n')).toContain('cannot be resolved to approved package code')
+})
+
+it('blocks an Include when any static child is outside the approved Host plugin allowlist', async () => {
+  const f = fixture()
+  f.plugin('employee-installed-plugin')
+  const included = join(f.dir, 'enterprise.cordis.yml')
+  writeFileSync(included, '- id: employee-plugin\n  name: employee-installed-plugin\n')
+
+  expect(await f.run([{ insert: [{ id: 'enterprise-include', name: 'cordis:include', config: { path: included } }] }], false, []))
+    .toEqual([])
+  expect(f.warnings.join('\n')).toContain('enterprise-include')
+  expect(f.warnings.join('\n')).toContain('approved Host plugin allowlist')
+})
+
+it('blocks an Include whose target cannot be statically inspected by an approved Host plugin policy', async () => {
+  const f = fixture()
+
+  expect(await f.run([{ insert: [{ id: 'dynamic-include', name: 'cordis:include', config: { path: 'https://plugins.invalid/enterprise.yml' } }] }], false, []))
+    .toEqual([])
+  expect(f.warnings.join('\n')).toContain('dynamic-include')
+  expect(f.warnings.join('\n')).toContain('dynamic Include cannot be inspected')
+})
+
+it('fails closed when a static Include file is malformed under an approved Host plugin policy', async () => {
+  const f = fixture()
+  const included = join(f.dir, 'malformed.cordis.yml')
+  writeFileSync(included, 'not: [an entry list')
+
+  expect(await f.run([{ insert: [{ id: 'malformed-include', name: 'cordis:include', config: { path: included } }] }], false, []))
+    .toEqual([])
+  expect(f.warnings.join('\n')).toContain('malformed-include')
+  expect(f.warnings.join('\n')).toContain('could not be inspected')
 })
 
 it('admits the same plugin only for its exact version and the running runtime', async () => {

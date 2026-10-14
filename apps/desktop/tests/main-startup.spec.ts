@@ -11,6 +11,8 @@ import { MANDATORY_IPC } from '../src/mandatory-update-ipc.ts'
 import { DesktopHostFatalError, DesktopHostUncleanExitError } from '../src/host-process.ts'
 import { en, zh } from '../src/locale.ts'
 import { DesktopUpdatePreparationError } from '../src/update-error.ts'
+import { resolveEnterpriseDataSpace } from '../src/enterprise-data-space.ts'
+import type { EnterpriseIdentityState } from '../src/enterprise-identity-state.ts'
 import { writeCrashReport } from '../src/crash-report.ts'
 
 type InvokeEvent = { sender?: unknown; senderFrame: { url: string } }
@@ -49,6 +51,8 @@ const harness = await vi.hoisted(async () => {
   let quitCompleted = deferred()
   let policyBlocked = deferred()
   let embeddedPolicy: unknown
+  let runtimeDescriptor: { release: { version: string }; sharedPackages?: readonly { readonly name: string }[]; allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]; trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]; enterpriseServiceOrigin?: string } | undefined
+  let runtimeReadFailure: Error | undefined
   let closeWindowsOnQuit = false
   let updateState: DesktopUpdateState = { phase: 'idle' }
   let platformDisposeDeferred: ReturnType<typeof deferred> | undefined
@@ -100,7 +104,7 @@ const harness = await vi.hoisted(async () => {
     readonly setTitleBarOverlay = vi.fn()
     readonly setVibrancy = vi.fn()
     readonly setBackgroundColor = vi.fn()
-    constructor(readonly options: { show: boolean; modal?: boolean }) {
+    constructor(readonly options: { show: boolean; modal?: boolean; webPreferences?: { session?: object } }) {
       super(); if (windowFailure !== undefined) throw windowFailure; windows.push(this)
     }
     isDestroyed() { return this.destroyed }
@@ -130,6 +134,10 @@ const harness = await vi.hoisted(async () => {
     }
   }
   class FakeHost {
+    initialEnterpriseIdentity: EnterpriseIdentityState | undefined
+    readonly flushPendingEnterpriseIdentity = vi.fn(() => {
+      if (this.initialEnterpriseIdentity !== undefined) this.onEnterpriseIdentity?.(this.initialEnterpriseIdentity)
+    })
     readonly updateTasks = vi.fn(async (_action: 'inspect' | 'lock' | 'unlock') => false)
     readonly inspectQuit = vi.fn(async () => ({ activeTasks: false, scheduledTasks: false }))
     url = 'http://127.0.0.1:3080/?token=test'
@@ -148,6 +156,13 @@ const harness = await vi.hoisted(async () => {
       readonly inspectPort?: number, readonly environment?: NodeJS.ProcessEnv, readonly onFailure?: (error: Error) => void,
       readonly primaryRuntime?: string,
       readonly packageManager?: { pnpm: string; nodeBin: string },
+      readonly onPlatformSession?: (session: unknown) => void,
+      readonly secureStore?: unknown,
+      readonly openExternal?: (url: string) => Promise<void>,
+      readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+      readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+      readonly onEnterpriseIdentity?: (state: EnterpriseIdentityState) => void,
+      readonly enterpriseServiceOrigin?: string,
     ) { hosts.push(this) }
   }
   const app = Object.assign(new EventEmitter(), {
@@ -160,6 +175,7 @@ const harness = await vi.hoisted(async () => {
     getAppPath: (): string => 'desktop-test-app',
     setAppLogsPath: vi.fn(),
     getPath: vi.fn<(name: string) => string>(),
+    setPath: vi.fn<(name: string, path: string) => void>(),
     setAboutPanelOptions: vi.fn<(options: Electron.AboutPanelOptionsOptions) => void>(),
     requestSingleInstanceLock: () => true,
     setAsDefaultProtocolClient: vi.fn(),
@@ -189,10 +205,25 @@ const harness = await vi.hoisted(async () => {
   }
   const backgroundNotice = { close: vi.fn((hide: () => void) => { hide() }), dispose: vi.fn(), markerPath: undefined as string | undefined }
   const shellDialog = { isOpen: false, focus: vi.fn() }
+  const browserSessions = new Map<string, {
+    protocol: { handle: ReturnType<typeof vi.fn<(scheme: string, handler: (request: Request) => Response | Promise<Response>) => void>> }
+    setPermissionCheckHandler: ReturnType<typeof vi.fn>
+    setPermissionRequestHandler: ReturnType<typeof vi.fn>
+    webRequest: { onBeforeSendHeaders: ReturnType<typeof vi.fn> }
+  }>()
+  const sessionFromPath = vi.fn((path: string) => {
+    let browserSession = browserSessions.get(path)
+    if (browserSession === undefined) {
+      browserSession = { protocol: { handle: vi.fn() }, setPermissionCheckHandler: vi.fn(),
+        setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: vi.fn() } }
+      browserSessions.set(path, browserSession)
+    }
+    return browserSession
+  })
   return {
     failWindow(error: Error) { windowFailure = error },
     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
-    trays, FakeTray, backgroundNotice, shellDialog,
+    trays, FakeTray, backgroundNotice, shellDialog, browserSessions, sessionFromPath,
     menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
     platformDispose,
     platformCloseAndWait,
@@ -229,6 +260,10 @@ const harness = await vi.hoisted(async () => {
     get policyBlocked() { return policyBlocked },
     get embeddedPolicy() { return embeddedPolicy },
     set embeddedPolicy(value: unknown) { embeddedPolicy = value },
+    get runtimeDescriptor() { return runtimeDescriptor },
+    set runtimeDescriptor(value: typeof runtimeDescriptor) { runtimeDescriptor = value },
+    get runtimeReadFailure() { return runtimeReadFailure },
+    set runtimeReadFailure(value: Error | undefined) { runtimeReadFailure = value },
     nextNavigation() { navigated = deferred(); return navigated.promise },
     nextHostStart() { hostStarted = deferred(); return hostStarted.promise },
     deferPlatformDispose() { platformDisposeDeferred = deferred(); return platformDisposeDeferred },
@@ -240,6 +275,7 @@ const harness = await vi.hoisted(async () => {
       accountListener = undefined
       windows.length = 0; hosts.length = 0; handlers.clear(); app.removeAllListeners()
       trays.length = 0
+      browserSessions.clear()
       backgroundNotice.markerPath = undefined
       shellDialog.isOpen = false
       powerMonitor.removeAllListeners()
@@ -259,6 +295,8 @@ const harness = await vi.hoisted(async () => {
       navigated = deferred(); dialogShown = deferred(); quitCompleted = deferred()
       policyBlocked = deferred()
       embeddedPolicy = undefined
+      runtimeDescriptor = undefined
+      runtimeReadFailure = undefined
       platformDisposeDeferred = undefined
       platformCloseDeferred = undefined
     },
@@ -276,6 +314,11 @@ vi.mock('../src/policy-test-auth.ts', () => ({ DesktopPolicyTestAuth: class {
 
 vi.mock('electron', () => ({
   app: harness.app,
+  safeStorage: {
+    isAsyncEncryptionAvailable: vi.fn(async () => true),
+    encryptStringAsync: vi.fn(async (value: string) => Buffer.from(value)),
+    decryptStringAsync: vi.fn(async (value: Buffer) => ({ result: value.toString('utf8'), shouldReEncrypt: false })),
+  },
   BrowserWindow: harness.FakeWindow,
   dialog: harness.dialog,
   shell: { openExternal: harness.openExternal },
@@ -290,7 +333,7 @@ vi.mock('electron', () => ({
     removeHandler: (channel: string) => { harness.handlers.delete(channel) },
   },
   Menu: { setApplicationMenu: harness.menu.setApplicationMenu, buildFromTemplate: harness.menu },
-  session: { defaultSession: {
+  session: { fromPath: harness.sessionFromPath, defaultSession: {
     setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
   } },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
@@ -306,8 +349,9 @@ vi.mock('../src/background-notice.ts', () => ({ DesktopBackgroundNotice: class {
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
   return { ...original, readFile: vi.fn((path: Parameters<typeof original.readFile>[0], encoding?: 'utf8') => {
-    if (path === join('desktop-test-app', 'package.json')) {
-      return Promise.resolve(JSON.stringify({ dshDesktopAppId: 'com.deepseek.dsh', dshMandatoryUpdatePolicy: harness.embeddedPolicy }))
+    if (path === join(harness.app.getAppPath(), 'package.json')) {
+      return Promise.resolve(JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')) as object,
+        dshMandatoryUpdatePolicy: harness.embeddedPolicy }))
     }
     return encoding === undefined ? original.readFile(path) : original.readFile(path, encoding)
   }) }
@@ -316,7 +360,11 @@ vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
   readDesktopLoginShellEnvironment: harness.loginShell,
 }))
-vi.mock('../src/runtime-tree.ts', () => ({ readDesktopRuntime: () => ({ release: { version: '1.0.0' } }) }))
+vi.mock('../src/runtime-tree.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/runtime-tree.ts')>(), readDesktopRuntime: () => {
+  if (harness.runtimeReadFailure !== undefined) throw harness.runtimeReadFailure
+  return harness.runtimeDescriptor ?? { release: { version: '1.0.0' } }
+} }))
 vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: 'desktop-test-profile' }) }))
 vi.mock('../src/project-manager.ts', () => ({
   DesktopProjectManager: class {
@@ -370,6 +418,21 @@ vi.mock('../src/welcome-backend.ts', () => ({
     account: { watch: harness.watchAccount, state: async () => ({ status: 'signed-out', attempt: null }) },
   }),
 }))
+vi.mock('../src/enterprise-welcome-backend.ts', () => ({
+  connectEnterpriseWelcome: async () => ({
+    read: async (): Promise<EnterpriseIdentityState> => ({ status: 'signed-out', generation: 0, pendingRevocation: false }),
+    beginLogin: async () => ({ attemptId: '00000000-0000-4000-8000-000000000001' }),
+    finishLogin: async () => ({ status: 'pending' }),
+  }),
+}))
+vi.mock('../src/welcome-window.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/welcome-window.ts')>(),
+  openEnterpriseWelcomeWindow: async () => {
+    const window = new harness.FakeWindow({ show: false })
+    window.show()
+    return window
+  },
+}))
 
 function configureTestAuthPopup(allow: boolean): void {
   const directory = join(harness.app.getPath('userData'), 'desktop')
@@ -406,7 +469,14 @@ beforeEach(() => {
   harness.reset()
   const userData = mkdtempSync(join(tmpdir(), 'dsh-main-user-data-'))
   onTestFinished(() => { rmSync(userData, { recursive: true, force: true }) })
-  harness.app.getPath.mockImplementation(name => name === 'userData' ? userData : `desktop-test-${name}`)
+  const appRoot = join(userData, 'packaged-app')
+  mkdirSync(appRoot)
+  writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+    dshDesktopEdition: 'official', dshDesktopAppId: 'com.deepseek.harness' }))
+  vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+  const appPaths = new Map([['userData', userData], ['appData', join(userData, 'app-data')]])
+  harness.app.getPath.mockImplementation(name => appPaths.get(name) ?? `desktop-test-${name}`)
+  harness.app.setPath.mockImplementation((name, path) => { appPaths.set(name, path) })
   harness.dialog.showMessageBox.mockImplementation((options: { title?: string }) => {
     if (options.title !== en.startupFailed) return Promise.resolve({ response: 1 })
     harness.dialogShown.resolve()
@@ -443,10 +513,181 @@ afterEach(async () => {
 })
 
 describe('desktop main startup', () => {
+  it('switches an existing signed-in employee before opening a bootstrap welcome', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'dsh-enterprise-resume-'))
+    onTestFinished(() => { rmSync(appRoot, { recursive: true, force: true }) })
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity']
+      .map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+      dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local' }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: allowed, trustedHostPackages: allowed,
+      enterpriseServiceOrigin: 'https://enterprise.example.test' }
+    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    harness.prepared.resolve()
+    await harness.hostStarted.promise
+    const bootstrap = harness.hosts[0]!
+    bootstrap.initialEnterpriseIdentity = { status: 'signed-in', companyId: 'test-company',
+      employeeId: 'employee-a', generation: 1, pendingRevocation: false }
+    bootstrap.ready.resolve()
+    await bootstrap.stopping.promise
+    expect(bootstrap.flushPendingEnterpriseIdentity).toHaveBeenCalledOnce()
+    expect(harness.windows).toHaveLength(1)
+    expect(harness.windows[0]!.urls).toEqual([])
+    bootstrap.exited.resolve()
+    await vi.waitFor(() => { expect(harness.hosts).toHaveLength(2) })
+    const employee = resolveEnterpriseDataSpace(harness.app.getPath('userData'),
+      { companyId: 'test-company', employeeId: 'employee-a' })
+    expect(harness.hosts[1]!.profile).toBe(employee.paths.profile)
+  })
+
+  it('passes the release-sealed enterprise Host list into the native Host process', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'dsh-enterprise-runtime-'))
+    onTestFinished(() => { rmSync(appRoot, { recursive: true, force: true }) })
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity'].map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+      dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local' }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: Object.freeze(allowed.map(item => Object.freeze({ ...item }))),
+      trustedHostPackages: Object.freeze(allowed.map(item => Object.freeze({ ...item }))),
+      enterpriseServiceOrigin: 'https://enterprise.example.test' }
+    vi.stubEnv('DSH_ENTERPRISE_SERVICE_ORIGIN', 'https://attacker.example.test')
+    vi.stubEnv('DSH_HOME', '/personal-home-must-not-be-used')
+    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+    const personalUserData = harness.app.getPath('userData')
+    const appData = harness.app.getPath('appData')
+
+    await readyForUpdate(false)
+
+    const appContents = harness.windows[0]!.webContents
+    appContents.mainFrame.url = 'dsh-app://app/'
+    await expect(invoke(DESKTOP_IPC.localeBootstrap, 'app')).resolves.toEqual({
+      languages: expect.any(Array), preference: null,
+    })
+
+    const enterpriseUserData = join(appData, 'com.deepseek.harness.enterprise.local')
+    expect(enterpriseUserData).not.toBe(personalUserData)
+    expect(harness.app.setPath.mock.calls).toEqual([
+      ['userData', enterpriseUserData], ['sessionData', join(enterpriseUserData, 'session')],
+    ])
+    expect(harness.app.setAppLogsPath).toHaveBeenCalledWith(join(enterpriseUserData, 'logs'))
+    expect(process.env.DSH_HOME).toBe(join(enterpriseUserData, 'enterprise-spaces', 'bootstrap', 'home'))
+    expect(harness.app.setAsDefaultProtocolClient).toHaveBeenCalledWith('dsh-enterprise')
+    expect(harness.app.setAsDefaultProtocolClient).not.toHaveBeenCalledWith('dsh')
+    const openUrl = { preventDefault: vi.fn() }
+    harness.app.emit('open-url', openUrl, 'dsh://open')
+    expect(harness.windows[0]!.focus).not.toHaveBeenCalled()
+    harness.app.emit('open-url', openUrl, 'dsh-enterprise://open')
+    expect(openUrl.preventDefault).toHaveBeenCalledTimes(2)
+
+    expect(harness.hosts[0]!.allowedHostPlugins).toEqual(allowed.map(plugin => ({
+      ...plugin, path: join(appRoot, 'dsh', plugin.path),
+    })))
+    expect(Object.isFrozen(harness.hosts[0]!.allowedHostPlugins)).toBe(true)
+    expect(harness.hosts[0]!.trustedHostPackages).toEqual(allowed.map(plugin => ({
+      ...plugin, path: join(appRoot, 'dsh', plugin.path),
+    })))
+    expect(Object.isFrozen(harness.hosts[0]!.trustedHostPackages)).toBe(true)
+    expect(harness.hosts[0]!.secureStore).toBeDefined()
+    expect(harness.hosts[0]!.openExternal).toBeDefined()
+    expect(harness.hosts[0]!.enterpriseServiceOrigin).toBe('https://enterprise.example.test')
+    expect(harness.hosts[0]!.environment?.DSH_ENTERPRISE_SERVICE_ORIGIN).toBe('https://enterprise.example.test')
+    const first = harness.hosts[0]!
+    const bootstrap = resolveEnterpriseDataSpace(harness.app.getPath('userData'), null)
+    const bootstrapWindow = harness.windows[0]!
+    expect(bootstrapWindow.urls).toEqual([])
+    const bootstrapSession = harness.browserSessions.get(join(bootstrap.home, 'browser-session'))
+    expect(bootstrapSession).toBeDefined()
+    expect(bootstrapWindow.options.webPreferences?.session).toBe(bootstrapSession)
+    expect(bootstrapSession!.protocol.handle).toHaveBeenCalledOnce()
+    expect(first.profile).toBe(bootstrap.paths.profile)
+    expect(first.environment?.DSH_HOME).toBe(bootstrap.home)
+    expect(first.environment?.DSH_ENTERPRISE_IDENTITY_SPACE).toBe('null')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(first.flushPendingEnterpriseIdentity).toHaveBeenCalledOnce()
+    expect(harness.windows).toHaveLength(2)
+    expect(harness.windows[1]!.show).toHaveBeenCalledOnce()
+    expect(bootstrapWindow.show).not.toHaveBeenCalled()
+    expect(bootstrapWindow.hide).toHaveBeenCalled()
+    expect(harness.handlers.has('dsh-welcome:skip')).toBe(false)
+    first.inspectQuit.mockResolvedValueOnce({ activeTasks: true, scheduledTasks: true })
+    harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 1 })
+    harness.windows[1]!.close()
+    await vi.waitFor(() => { expect(harness.windows).toHaveLength(3) })
+    expect(harness.windows[2]!.show).toHaveBeenCalledOnce()
+    expect(harness.handlers.has('dsh-welcome:skip')).toBe(false)
+    const identity = { companyId: 'test-company', employeeId: 'employee-a' }
+    first.onEnterpriseIdentity!({ status: 'signed-in', ...identity, generation: 1, pendingRevocation: false })
+    const oldSender = bootstrapWindow.webContents
+    // A stale renderer could have already loaded this origin before the identity switch.
+    oldSender.mainFrame.url = 'dsh-app://app/'
+    const oldBoot = Promise.resolve(harness.handlers.get(DESKTOP_IPC.boot)!({ sender: oldSender, senderFrame: oldSender.mainFrame }))
+    const rejectedOldBoot = expect(oldBoot).rejects.toThrow('unowned renderer')
+    await first.stopping.promise
+    expect(bootstrapWindow.isDestroyed()).toBe(true)
+    harness.app.emit('window-all-closed')
+    expect(harness.app.quit).toHaveBeenCalledTimes(1)
+    const oldProtocol = bootstrapSession!.protocol.handle.mock.calls[0]![1]
+    expect((await oldProtocol(new Request('dsh-app://app/api/session'))).status).toBe(503)
+    expect(harness.hosts).toHaveLength(1)
+    first.exited.resolve()
+    await vi.waitFor(() => { expect(harness.hosts).toHaveLength(2) })
+    const employee = resolveEnterpriseDataSpace(harness.app.getPath('userData'), identity)
+    const second = harness.hosts[1]!
+    expect(second.profile).toBe(employee.paths.profile)
+    expect(second.environment?.DSH_HOME).toBe(employee.home)
+    expect(JSON.parse(second.environment!.DSH_ENTERPRISE_IDENTITY_SPACE!)).toEqual(identity)
+    second.ready.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    await rejectedOldBoot
+    const employeeSession = harness.browserSessions.get(join(employee.home, 'browser-session'))
+    expect(employeeSession).toBeDefined()
+    expect(employeeSession).not.toBe(bootstrapSession)
+    expect(harness.windows.at(-1)!.options.webPreferences?.session).toBe(employeeSession)
+    expect(employeeSession!.protocol.handle).toHaveBeenCalledOnce()
+    expect(employeeSession!.webRequest.onBeforeSendHeaders).toHaveBeenCalledOnce()
+    first.onEnterpriseIdentity!({ status: 'signed-out', generation: 2, pendingRevocation: true })
+    second.onEnterpriseIdentity!({ status: 'signed-in', ...identity, generation: 1, pendingRevocation: false })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.hosts).toHaveLength(2)
+  })
+
+  it('fails closed when the packaged runtime descriptor is missing or invalid', async () => {
+    harness.runtimeReadFailure = new Error('desktop runtime: invalid descriptor')
+
+    await import('../src/main.ts')
+    expect(harness.app.exit).toHaveBeenCalledWith(1)
+    expect(harness.app.setAppLogsPath).not.toHaveBeenCalled()
+    expect(harness.app.setPath).not.toHaveBeenCalled()
+    expect(harness.hosts).toHaveLength(0)
+  })
+
+  it('refuses enterprise plugins under an official ASAR marker before opening the personal data root', async () => {
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity']
+      .map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: allowed, enterpriseServiceOrigin: 'https://enterprise.example.test' }
+    const lock = vi.spyOn(harness.app, 'requestSingleInstanceLock')
+    const previousUserData = harness.app.getPath('userData')
+
+    await import('../src/main.ts')
+
+    expect(harness.app.exit).toHaveBeenCalledWith(1)
+    expect(lock).not.toHaveBeenCalled()
+    expect(harness.app.setAppLogsPath).not.toHaveBeenCalled()
+    expect(harness.app.setPath).not.toHaveBeenCalled()
+    expect(harness.app.getPath('userData')).toBe(previousUserData)
+  })
+
   it.each([true, false])('selects the package manager before Host startup (packaged=%s)', async (packaged) => {
     harness.app.isPackaged = packaged
     await readyForUpdate()
     const host = harness.hosts[0]!
+    expect(host.secureStore).toBeUndefined()
+    expect(host.openExternal).toBeUndefined()
     expect(host.node).toBe(process.execPath)
     expect(host.primaryRuntime).toBe(packaged
       ? join('desktop-test-resources', 'runtime', 'primary-runtime') : 'test-primary-runtime')
@@ -454,7 +695,7 @@ describe('desktop main startup', () => {
       pnpm: packaged
         ? join('desktop-test-resources', 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')
         : 'test-pnpm',
-      nodeBin: packaged ? join('desktop-test-resources', 'runtime', 'bin') : join('desktop-test-app', 'scripts', 'node-bin'),
+      nodeBin: packaged ? join('desktop-test-resources', 'runtime', 'bin') : join(harness.app.getAppPath(), 'scripts', 'node-bin'),
     })
   })
 
@@ -473,12 +714,12 @@ describe('desktop main startup', () => {
 
   it('routes shell update documents and assets through the registered main protocol handler', async () => {
     const root = join(import.meta.dirname, '..')
-    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(root)
     const web = await import('../src/web-document.ts')
     const actual = await vi.importActual<typeof import('../src/web-document.ts')>('../src/web-document.ts')
     vi.mocked(web.serveWebDocument).mockImplementation(actual.serveWebDocument)
     try {
       await readyForUpdate()
+      vi.spyOn(harness.app, 'getAppPath').mockReturnValue(root)
       const { protocol } = await import('electron')
       const handler = vi.mocked(protocol).handle.mock.calls.at(-1)?.[1]
       if (handler === undefined) throw new Error('main did not register its protocol handler')
@@ -512,7 +753,7 @@ describe('desktop main startup', () => {
     for (const file of ['update-dialog.html', 'update-dialog.js', 'update-dialog.css', 'update-close.svg', 'mandatory-update.html']) {
       const request = new Request(`dsh-app://shell/${file}`)
       await handler(request)
-      expect(serveWebDocument).toHaveBeenLastCalledWith(request, join('desktop-test-app', 'renderer'))
+      expect(serveWebDocument).toHaveBeenLastCalledWith(request, join(harness.app.getAppPath(), 'renderer'))
     }
     expect(forwardWebRequest).not.toHaveBeenCalled()
     expect((await handler(new Request('dsh-app://unknown/update-dialog.html'))).status).toBe(404)
@@ -547,7 +788,7 @@ describe('desktop main startup', () => {
     expect({ menu: [{ label: about!.label, role: about!.role }, separator], options: { ...options, iconPath: '<app icon>' } })
       .toEqual(expected[`${platform}:${locale}`])
     expect(options.iconPath).toBe(packaged ? join('desktop-test-resources', 'icon.png')
-      : join('desktop-test-app', 'resources', 'icon-windows.png'))
+      : join(harness.app.getAppPath(), 'resources', 'icon-windows.png'))
     if (platform !== 'win32') { expect(about!.click).toBeUndefined(); return }
     // Windows reuses the dimmed update dialog because Electron's fallback is a bare message box.
     harness.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 })
@@ -851,7 +1092,7 @@ describe('desktop main startup', () => {
     const handler = harness.protocolHandle.mock.calls[0]![1]
     const request = new Request('dsh-app://shell/update-dialog.html')
     expect(await (await handler(request)).text()).toBe('shell document')
-    expect(serveWebDocument).toHaveBeenCalledWith(request, join('desktop-test-app', 'renderer'))
+    expect(serveWebDocument).toHaveBeenCalledWith(request, join(harness.app.getAppPath(), 'renderer'))
     expect((await handler(new Request('dsh-app://foreign/index.html'))).status).toBe(404)
   })
 
@@ -1115,8 +1356,10 @@ describe('desktop main startup', () => {
     await harness.preparing.promise
     const handler = harness.handlers.get(DESKTOP_IPC.boot)!
     await expect(handler({ senderFrame: { url: 'https://other.example/' } })).rejects.toThrow('unowned renderer')
+    await expect(handler({ senderFrame: { url: 'dsh-app://app/' } })).rejects.toThrow('unowned renderer')
+    const sender = harness.windows[0]!.webContents
     let settled = false
-    const boot = Promise.resolve(handler({ senderFrame: { url: 'dsh-app://app/' } })).then((value) => { settled = true; return value })
+    const boot = Promise.resolve(handler({ sender, senderFrame: sender.mainFrame })).then((value) => { settled = true; return value })
     await Promise.resolve()
     expect(settled).toBe(false)
     expect(harness.windows[0]!.urls).toEqual(['dsh-app://app/'])
@@ -1174,13 +1417,13 @@ describe('desktop main startup', () => {
     expect(harness.openExternal).not.toHaveBeenCalled()
   })
 
-  async function readyForUpdate() {
+  async function readyForUpdate(navigate = true) {
     await import('../src/main.ts')
     await harness.preparing.promise
     harness.prepared.resolve()
     await harness.hostStarted.promise
     harness.hosts[0]!.ready.resolve()
-    await harness.navigated.promise
+    if (navigate) await harness.navigated.promise
     return harness.hosts[0]!
   }
 
@@ -2236,6 +2479,8 @@ describe('desktop main startup', () => {
       profile: 'desktop-test-profile',
     })
     expect(harness.hosts[0]!.environment).not.toBe(process.env)
+    expect(harness.hosts[0]!.secureStore).toBeUndefined()
+    expect(harness.hosts[0]!.openExternal).toBeUndefined()
     expect(harness.hosts[0]!.environment?.DSH_CLIENT_VERSION).toBe('1.2.3')
     expect(harness.hosts[0]!.environment?.DSH_TEST_LOGIN_SHELL).toBe('login')
     expect(console.warn).toHaveBeenCalledWith('desktop login shell: /account/shell failed (timeout)')

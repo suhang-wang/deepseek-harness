@@ -100,6 +100,7 @@ describe('runProfile with an application-owned profile', () => {
     writeFileSync(join(localPackageDir, 'index.cjs'), 'module.exports = "profile"\n')
     vi.stubEnv('DSH_HOME', home)
     vi.stubEnv('DSH_TELEMETRY_DISABLED', '1')
+    vi.stubEnv('DSH_ENTERPRISE_SERVICE_ORIGIN', 'https://enterprise.example.test')
     vi.spyOn(process, 'on').mockReturnValue(process)
     const oldExitCode = process.exitCode
     const ctx = new Context()
@@ -132,12 +133,21 @@ describe('runProfile with an application-owned profile', () => {
         ] }],
       }],
     }
-    const environment = createLaunchEnvironmentSnapshot([{ source: 'process', values: { HTTPS_PROXY: 'http://localhost:8080' } }])
+    const environment = createLaunchEnvironmentSnapshot([{ source: 'process', values: {
+      HTTPS_PROXY: 'http://localhost:8080', DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://enterprise.example.test',
+    } }])
     const runtime = { profile, installAnchor: join(home, 'runtime/package.json') }
+    const approvedHostPlugins = [{ name: 'test-bundle', version: '1.0.0', path: join(home, 'node_modules/test-bundle') }]
+    const trustedHostPackages = [
+      { name: 'debug', version: '4.4.3', path: join(home, 'node_modules/debug') },
+      { name: 'debug', version: '2.6.9', path: join(home, 'node_modules/compression/node_modules/debug') },
+    ]
     try {
       const { shutdown } = await runProfile({
         environment, profile: 'desktop', resolvedProfile: runtime,
-        patchFiles: [overlay], args: ['--port', '0', '--no-open'],
+        patchFiles: [overlay], args: ['--port', '0', '--no-open'], allowedHostPlugins: approvedHostPlugins,
+        trustedHostPackages,
+        enterpriseServiceOrigin: 'https://enterprise.example.test',
       })
       expect(installProxyFromEnvironment).toHaveBeenCalledWith(environment, expect.any(Function))
       const resolution = vi.mocked(createRuntimeResolution).mock.settledResults
@@ -163,7 +173,14 @@ describe('runProfile with an application-owned profile', () => {
       ])
       expect(rows.find(row => row.id === 'target')?.config).toEqual({ overlay: true, priority: 'overlay' })
       expect(rows.find(row => row.id === 'session-telemetry-otel')?.disabled).toBe(true)
-      expect(ctx.profileContext).toMatchObject({ dir: home, patchPath: profilePatch, installAnchor: runtime.installAnchor })
+      expect(ctx.profileContext).toMatchObject({
+        dir: home, patchPath: profilePatch, installAnchor: runtime.installAnchor, allowedHostPlugins: approvedHostPlugins,
+        enterpriseServiceOrigin: 'https://enterprise.example.test',
+      })
+      expect(ctx.profileContext.allowedHostPlugins).not.toBe(approvedHostPlugins)
+      expect(ctx.profileContext.trustedHostPackages).toEqual(trustedHostPackages)
+      expect(Object.isFrozen(ctx.profileContext.allowedHostPlugins)).toBe(true)
+      expect(Object.isFrozen(ctx.profileContext)).toBe(true)
       await shutdown.shutdown(0)
       expect(dispose).toHaveBeenCalledOnce()
       expect(disposeProxy).toHaveBeenCalledOnce()
@@ -171,5 +188,24 @@ describe('runProfile with an application-owned profile', () => {
       await ctx.fiber.dispose()
       process.exitCode = oldExitCode
     }
+  })
+
+  it('rejects malformed or duplicate approved Host plugin names before startup', async () => {
+    const environment = createLaunchEnvironmentSnapshot([])
+    await expect(runProfile({ environment, profile: 'desktop', patchFiles: [], args: [], allowedHostPlugins: [{ name: 'valid', version: '1.0.0', path: '/valid' }, { name: ' valid', version: '1.0.0', path: '/valid2' }] }))
+      .rejects.toThrow('invalid approved Host plugin')
+    await expect(runProfile({ environment, profile: 'desktop', patchFiles: [], args: [], allowedHostPlugins: [{ name: 'duplicate', version: '1.0.0', path: '/one' }, { name: 'duplicate', version: '1.0.0', path: '/two' }] }))
+      .rejects.toThrow('approved Host plugins must be unique')
+    expect(installProxyFromEnvironment).not.toHaveBeenCalled()
+  })
+
+  it('rejects a signed enterprise origin when the Host environment is different', async () => {
+    const environment = createLaunchEnvironmentSnapshot([{ source: 'process', values: {
+      DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://attacker.example.test',
+    } }])
+    await expect(runProfile({ environment, profile: 'desktop', patchFiles: [], args: [],
+      enterpriseServiceOrigin: 'https://enterprise.example.test' }))
+      .rejects.toThrow('differs from the Host launch environment')
+    expect(installProxyFromEnvironment).not.toHaveBeenCalled()
   })
 })

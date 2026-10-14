@@ -11,6 +11,30 @@ import {
 const RELEASE_ID = '0123456789abcdef0123456789abcdef'
 
 describe('desktop auto-update environment', () => {
+  it('requires an explicit enterprise feed and keeps enterprise paths separate from official updates', () => {
+    const enterprise = { DSH_DESKTOP_ENTERPRISE_MODE: '1', DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+      DOWNLOAD_TEST_ORIGIN: 'https://official.example.com' }
+    expect(() => resolveDesktopAutoUpdateConfig(enterprise, 'darwin', 'arm64'))
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
+    expect(resolveDesktopAutoUpdateConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com' }, 'darwin', 'arm64')).toMatchObject({
+      publicUrl: `https://enterprise.example.com/dsh-enterprise/${RELEASE_ID}/feeds/mac-arm64/`,
+      keyPrefix: `dsh-enterprise/${RELEASE_ID}/feeds/mac-arm64`,
+      binaryKeyPrefix: `dsh-enterprise/${RELEASE_ID}/bin/mac-arm64`,
+    })
+    expect(() => resolveDesktopAutoUpdateConfig({ ...enterprise, DSH_DESKTOP_AUTO_UPDATE_ENV: 'production' }, 'darwin', 'arm64'))
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
+    expect(() => resolveDesktopAutoUpdateConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://download.deepseek.com' }, 'darwin', 'arm64'))
+      .toThrow(/official DeepSeek download host/u)
+    expect(() => resolveDesktopAutoUpdateConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'http://enterprise.example.com' }, 'darwin', 'arm64'))
+      .toThrow(/HTTPS origin/u)
+    expect(() => resolveDesktopUploadConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com',
+      DOWNLOAD_TEST_COS_BUCKET: 'official-bucket' }, 'darwin', 'arm64'))
+      .toThrow(/enterprise upload requires/u)
+  })
   it.each([undefined, 'test'])('requires a release ID for deployment %s', (deployment) => {
     const environment = { DSH_DESKTOP_AUTO_UPDATE_ENV: deployment, DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com',
       DOWNLOAD_TEST_COS_BUCKET: 'test-bucket' }

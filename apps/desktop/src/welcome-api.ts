@@ -3,6 +3,7 @@
 import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
 import type { ProductEventMap } from '@deepseek-ai/dsh-client-product-analytics/types'
 import type { DesktopLocale } from './locale.ts'
+import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 
 /** Private native welcome channels, installed only while its window exists. */
 export const WELCOME_IPC = {
@@ -16,6 +17,34 @@ export const WELCOME_IPC = {
   state: 'dsh-welcome:state',
   takeNotice: 'dsh-welcome:take-notice',
 } as const
+
+/** Separate channels; an enterprise preload never exposes the personal-account API. */
+export const ENTERPRISE_WELCOME_IPC = {
+  read: 'dsh-enterprise-welcome:read',
+  begin: 'dsh-enterprise-welcome:begin',
+  beginQr: 'dsh-enterprise-welcome:begin-qr',
+  finish: 'dsh-enterprise-welcome:finish',
+} as const
+
+export type EnterpriseLoginResult = { readonly status: 'signed-in' | 'pending' | 'denied' | 'expired' }
+
+/** The native window receives only public identity state and an opaque attempt ID. */
+export interface EnterpriseWelcomeApi extends DesktopLocale {
+  readonly mode: 'enterprise'
+  read(): Promise<EnterpriseIdentityState>
+  beginLogin(): Promise<{ readonly attemptId: string }>
+  beginQrLogin(): Promise<{ readonly attemptId: string; readonly qrUrl: string }>
+  finishLogin(attemptId: string): Promise<EnterpriseLoginResult>
+}
+
+/** Main-owned operations; onSignedIn transitions to the enterprise workspace. */
+export interface EnterpriseWelcomeOperations {
+  read(): Promise<EnterpriseIdentityState>
+  beginLogin(): Promise<{ readonly attemptId: string }>
+  beginQrLogin(): Promise<{ readonly attemptId: string; readonly qrUrl: string }>
+  finishLogin(attemptId: string): Promise<EnterpriseLoginResult>
+  onSignedIn(state: Extract<EnterpriseIdentityState, { readonly status: 'signed-in' }>): Promise<void> | void
+}
 
 /** Credential writes return a safe outcome without exposing Host diagnostics. */
 export type WelcomeSaveResult = { readonly ok: true } | { readonly ok: false }

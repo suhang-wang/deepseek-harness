@@ -261,6 +261,7 @@ async function seal(input: Awaited<ReturnType<typeof fixture>>): Promise<Desktop
       nodeVersion: process.versions.node, pnpmVersion: '11.7.0' },
     platform: process.platform, arch: process.arch,
     sharedPackages: [{ name: 'foo', version: '1.0.0', path: 'node_modules/foo' }],
+    trustedHostPackages: [{ name: 'foo', version: '1.0.0', path: 'node_modules/foo' }],
     files: inventoryDesktopRuntime(input.source),
   }
   await writeFile(join(input.source, 'desktop-runtime.json'), `${JSON.stringify(descriptor, undefined, 2)}\n`)

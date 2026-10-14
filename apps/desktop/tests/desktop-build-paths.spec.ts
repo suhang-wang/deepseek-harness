@@ -34,6 +34,14 @@ describe('desktop build paths', () => {
     expect(windows.runtime).toContain(join('targets', 'win-x64', 'runtime'))
   })
 
+  it('keeps enterprise preparation and artifacts separate from official targets', () => {
+    const official = desktopTargetBuildPaths('mac-arm64')
+    const enterprise = desktopTargetBuildPaths('mac-arm64', 'enterprise')
+    expect(enterprise.root).not.toBe(official.root)
+    expect(enterprise.packedEnterprise).toContain(join('enterprise', 'targets', 'mac-arm64', 'packed', 'enterprise'))
+    expect(enterprise.downloads).toBe(official.downloads)
+  })
+
   it('shares only the immutable upstream download cache', () => {
     const arm64 = desktopTargetBuildPaths('mac-arm64')
     const x64 = desktopTargetBuildPaths('mac-x64')

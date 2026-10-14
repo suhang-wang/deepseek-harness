@@ -44,6 +44,37 @@ describe('desktop package target', () => {
       .toThrow(/at most one target/u)
   })
 
+  it('requires explicit enterprise repository and build-time service origin together', () => {
+    const enterprise = parseDesktopPackageInvocation([
+      'mac-arm64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+      '--enterprise-service-origin', 'https://127.0.0.1:3443',
+    ], 'darwin', 'arm64')
+    expect(enterprise.enterprise).toEqual({
+      packagesRoot: expect.stringContaining('enterprise-package-input'),
+      serviceOrigin: 'https://127.0.0.1:3443',
+    })
+    expect(() => parseDesktopPackageInvocation([
+      'mac-arm64', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+    ], 'darwin', 'arm64')).toThrow(/enterprise-service-origin/u)
+    expect(() => parseDesktopPackageInvocation([
+      'mac-arm64', '--enterprise-service-origin', 'https://api.example.test',
+    ], 'darwin', 'arm64')).toThrow(/enterprise-packages/u)
+    for (const origin of ['http://api.example.test', 'https://api.example.test/path', 'https://name:pass@api.example.test']) {
+      expect(() => parseDesktopPackageInvocation([
+        'mac-arm64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+        '--enterprise-service-origin', origin,
+      ], 'darwin', 'arm64')).toThrow(/HTTPS origin/u)
+    }
+    expect(parseDesktopPackageInvocation([
+      'mac-arm64', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+      '--enterprise-service-origin', 'https://api.example.test',
+    ], 'darwin', 'arm64').unsigned).toBe(false)
+    expect(() => parseDesktopPackageInvocation([
+      'mac-x64', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+      '--enterprise-service-origin', 'https://api.example.test',
+    ], 'darwin', 'arm64')).toThrow(/mac-arm64 only/u)
+  })
+
   it('parses a build version, including the separator a pnpm run script forwards', () => {
     expect(parseDesktopPackageInvocation(['mac-arm64'], 'darwin', 'arm64').requestedBuildVersion).toBeUndefined()
     expect(parseDesktopPackageInvocation(['mac-arm64', '--build-version', '0.1.6-alpha.2.20260921.1'], 'darwin', 'arm64')

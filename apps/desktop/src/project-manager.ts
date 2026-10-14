@@ -59,14 +59,24 @@ function migrateProfileSettings(projectDir: string): void {
 
 /** Initializes the Desktop profile and disables third-party bundles during recovery. */
 export class DesktopProjectManager {
+  private readonly profileBundles: readonly string[]
+
   /**
    * @param paths - Electron-owned package state and reserved desktop profile paths.
    * @param runtime - location of the bundled application runtime.
+   * @param requiredBundles - Release-owned bundles retained during profile recovery.
    */
   constructor(
     readonly paths: DesktopPaths,
     readonly runtime: { readonly dsh: string },
-  ) {}
+    requiredBundles: readonly string[] = [],
+  ) {
+    if (new Set(requiredBundles).size !== requiredBundles.length
+      || requiredBundles.some(name => !/^(?:@[a-z0-9][a-z0-9._~-]*\/[a-z0-9][a-z0-9._~-]*|[a-z0-9][a-z0-9._~-]*)$/u.test(name))) {
+      throw new TypeError('desktop project: invalid required profile bundles')
+    }
+    this.profileBundles = Object.freeze([...new Set([...WEB_PROFILE.bundles, ...requiredBundles])])
+  }
 
   /**
    * Back up the profile patch and disable third-party bundles without loading application resources.
@@ -74,7 +84,7 @@ export class DesktopProjectManager {
    * @returns Backup path after the locked profile write, or undefined if the patch was absent.
    */
   async disableAllPlugins(): Promise<string | undefined> {
-    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, WEB_PROFILE.bundles))
+    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, this.profileBundles))
   }
 
   /**
@@ -85,7 +95,7 @@ export class DesktopProjectManager {
       // Validation only: an unreadable or mismatched runtime descriptor stops preparation before the Host starts.
       readDesktopRuntime(this.runtime.dsh)
       migrateProfileSettings(this.paths.profile)
-      createPluginProfile(this.paths.profile)
+      createPluginProfile(this.paths.profile, this.profileBundles)
       removeLinkProjections(this.paths.profile)
     })
   }
@@ -171,6 +181,6 @@ export function createDevelopmentProjectMetadata(projectDir: string, release: De
 }
 
 /** Create the first external plugin profile without running a package manager. */
-export function createPluginProfile(projectDir: string): void {
-  initProfile(projectDir, WEB_PROFILE.bundles)
+export function createPluginProfile(projectDir: string, bundles: readonly string[] = WEB_PROFILE.bundles): void {
+  initProfile(projectDir, bundles)
 }

@@ -3,6 +3,10 @@
 /** Environment variable that supplies the Electron application identifier. */
 export const DESKTOP_APP_ID_ENV = 'DSH_DESKTOP_APP_ID'
 
+/** Local-only identifier; a signed enterprise build must use an identifier owned by its publisher. */
+export const LOCAL_ENTERPRISE_APP_ID = 'com.deepseek.harness.enterprise.local'
+export const OFFICIAL_APP_ID = 'com.deepseek.harness'
+
 /** Environment variable that supplies electron-builder's macOS certificate qualifier. */
 export const MACOS_SIGNING_IDENTITY_ENV = 'DSH_DESKTOP_MACOS_SIGNING_IDENTITY'
 
@@ -66,6 +70,35 @@ export function resolveDesktopAppId(env) {
     throw new Error(`desktop release environment: ${DESKTOP_APP_ID_ENV} must be a reverse-DNS identifier`)
   }
   return appId
+}
+
+/**
+ * Select the packaged edition and reject identities that could collide with the other edition.
+ * Ownership of a signed identifier must also be confirmed by the enterprise publisher.
+ * @param {NodeJS.ProcessEnv} env - Selected packaging environment.
+ * @returns {{ edition: 'official' | 'enterprise', appId: string, productName: string, protocolScheme: string, artifactPrefix: string }}
+ */
+export function resolveDesktopPackageIdentity(env) {
+  const mode = env.DSH_DESKTOP_ENTERPRISE_MODE
+  if (mode !== undefined && mode !== '1') {
+    throw new Error('desktop release environment: DSH_DESKTOP_ENTERPRISE_MODE must be 1 when present')
+  }
+  const appId = resolveDesktopAppId(env)
+  if (mode === undefined) {
+    if (appId === LOCAL_ENTERPRISE_APP_ID) {
+      throw new Error('desktop release environment: provisional enterprise app ID requires enterprise mode')
+    }
+    return { edition: 'official', appId, productName: 'DeepSeek Harness', protocolScheme: 'dsh', artifactPrefix: 'deepseek-harness' }
+  }
+  if (env.DSH_DESKTOP_UNSIGNED === '1') {
+    if (appId !== LOCAL_ENTERPRISE_APP_ID) {
+      throw new Error('desktop release environment: unsigned enterprise app ID must be the isolated provisional enterprise app ID')
+    }
+  } else if (appId === LOCAL_ENTERPRISE_APP_ID || appId === 'com.deepseek' || appId.startsWith('com.deepseek.')) {
+    throw new Error('desktop release environment: signed enterprise app ID must be an explicit identifier owned by the enterprise publisher')
+  }
+  return { edition: 'enterprise', appId, productName: 'DeepSeek Harness Enterprise',
+    protocolScheme: 'dsh-enterprise', artifactPrefix: 'deepseek-harness-enterprise' }
 }
 
 /**

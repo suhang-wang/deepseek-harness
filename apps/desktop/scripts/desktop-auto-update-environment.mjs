@@ -131,13 +131,19 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
   const environment = resolveDesktopAutoUpdateEnvironment(env)
   const target = resolveDesktopAutoUpdateTarget(platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[environment]
-  let origin = deployment.fixedOrigin
+  const enterprise = env.DSH_DESKTOP_ENTERPRISE_MODE === '1'
+  let origin = enterprise
+    ? httpsOrigin(requiredEnvironmentValue(env, 'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN'), 'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN')
+    : deployment.fixedOrigin
+  if (enterprise && origin === 'https://download.deepseek.com') {
+    throw new Error('desktop auto-update: enterprise update origin must not use the official DeepSeek download host')
+  }
   if (origin === undefined) {
     const { originEnvName } = deployment
     if (originEnvName === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
     origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
   }
-  let releasePrefix = 'dsh-desk'
+  let releasePrefix = enterprise ? 'dsh-enterprise' : 'dsh-desk'
   if (environment === 'test') {
     const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')
     if (!/^[a-f0-9]{32}$/u.test(releaseId)) {
@@ -165,6 +171,9 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
  * @throws {Error} When the selected deployment lacks a bucket or valid updater configuration.
  */
 export function resolveDesktopUploadConfig(env, platform, arch) {
+  if (env.DSH_DESKTOP_ENTERPRISE_MODE === '1') {
+    throw new Error('desktop auto-update: enterprise upload requires a qualified enterprise release publisher')
+  }
   const update = resolveDesktopAutoUpdateConfig(env, platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[update.environment]
   return {

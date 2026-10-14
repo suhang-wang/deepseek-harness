@@ -9,7 +9,7 @@ import { applyEntryPatches, entryListSchema, type PatchOptions } from '@deepseek
 import { load } from 'js-yaml'
 import { resolvePluginResource } from './package-meta.ts'
 import { barePackageName } from './profile-resolution/resolver.ts'
-import type {} from './profile-resolution/service.ts'
+import type { PluginPackage } from './profile-resolution/service.ts'
 import type {} from './profile-context.ts'
 import { evaluatePluginCompatibility, pluginCompatibilityWarning } from './plugin-compatibility.ts'
 import { readProfileCompatibility } from './profile-compatibility.ts'
@@ -60,6 +60,58 @@ function manifestOf(ctx: Context, name: string, parentURL: string): object | und
   }
 }
 
+/** Require a declared dependency graph to remain inside the signed runtime package catalog. */
+function dependencyClosureIssue(ctx: Context, root: PluginPackage,
+  trusted: ReadonlyMap<string, readonly { version: string; path: string }[]>): string | undefined {
+  const packages = ctx.get('pluginPackages')
+  if (packages === undefined) return 'the package resolver is unavailable for dependency verification'
+  const visited = new Set<string>()
+  const inspect = (pkg: PluginPackage): string | undefined => {
+    const resolvedPath = realpathSync(pkg.dir)
+    const approved = trusted.get(pkg.name)?.some(entry =>
+      pkg.version === entry.version && resolvedPath === realpathSync(entry.path)) === true
+    if (!approved) {
+      return `dependency ${JSON.stringify(pkg.name)} is outside the signed Host runtime package set`
+    }
+    // Node can resolve different installations of one name from different parents.
+    // Check each resolved instance; a name-only visited set would skip nested copies.
+    const identity = JSON.stringify([pkg.name, pkg.version, resolvedPath])
+    if (visited.has(identity)) return undefined
+    visited.add(identity)
+    const manifest = pkg.manifest
+    const required = [manifest.dependencies, manifest.optionalDependencies, manifest.peerDependencies]
+    const optionalPeers = record(manifest.peerDependenciesMeta) ? manifest.peerDependenciesMeta : {}
+    for (let index = 0; index < required.length; index++) {
+      const dependencies = required[index]
+      if (dependencies === undefined) continue
+      if (!record(dependencies)) return `dependency metadata for ${JSON.stringify(pkg.name)} is invalid`
+      for (const name of Object.keys(dependencies)) {
+        const dependency = packages.packageOf(name, pathToFileURL(join(pkg.dir, 'package.json')).href)
+        if (dependency === undefined) {
+          const optional = index === 1 || (index === 2 && record(optionalPeers[name]) && optionalPeers[name].optional === true)
+          if (optional) continue
+          return `required dependency ${JSON.stringify(name)} of ${JSON.stringify(pkg.name)} cannot be resolved`
+        }
+        const issue = inspect(dependency)
+        if (issue !== undefined) return issue
+      }
+    }
+    return undefined
+  }
+  return inspect(root)
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function enterpriseServiceOriginMatches(config: unknown, origin: string): boolean {
+  if (!record(config)) return false
+  const serviceOrigin = config.serviceOrigin
+  return serviceOrigin === origin || (record(serviceOrigin) && Object.keys(serviceOrigin).length === 1
+    && serviceOrigin.__jsExpr === 'process.env.DSH_ENTERPRISE_SERVICE_ORIGIN')
+}
+
 /** Prepare profile or preset rows before the owning DSH caller passes them to Loader.
  * Only a compatibility conflict denies a row: an entry whose manifest cannot be resolved keeps
  * the Loader's own import failure. A denied ordinary row gains `disabled`; a native Include that
@@ -93,6 +145,19 @@ function preflight(
   const profile = ctx.get('profileContext')
   if (profile === undefined) return { rows, blocked: false }
   if (parentURL === undefined) throw new Error('Profile compatibility preflight requires a resolution base')
+  const allowedHostPlugins = profile.allowedHostPlugins === undefined
+    ? undefined
+    : new Map(profile.allowedHostPlugins.map(plugin => [plugin.name, plugin]))
+  const trustedHostPackages = profile.trustedHostPackages === undefined
+    ? undefined
+    : profile.trustedHostPackages.reduce((catalog, pkg) => {
+      catalog.set(pkg.name, [...(catalog.get(pkg.name) ?? []), pkg])
+      return catalog
+    }, new Map<string, { version: string; path: string }[]>())
+  const enterpriseServiceOrigin = profile.enterpriseServiceOrigin
+  if (allowedHostPlugins?.has('@dsh-enterprise/harness-bundle') && enterpriseServiceOrigin === undefined) {
+    throw new Error('dsh: signed enterprise service origin is missing')
+  }
   // A damaged permission file authorizes nothing, but it must not stop the profile from starting.
   const { exemptions, warnings } = readProfileCompatibility(profile.dir)
   for (const warning of warnings) process.stderr.write(`${warning}\n`)
@@ -100,6 +165,31 @@ function preflight(
   /** Only a compatibility conflict denies a row; every other failure keeps the Loader's own diagnosis. */
   const denial = (row: EntryOptions, base: string): string | undefined => {
     try {
+      if (allowedHostPlugins !== undefined) {
+        // Framework composition carriers are part of the launcher, but their children are
+        // recursively checked below before the Loader imports them.
+        if (row.name === 'cordis:group' || row.name === 'cordis:include'
+          || row.name === '@deepseek-ai/cordis-plugin-group' || row.name === '@deepseek-ai/cordis-plugin-include'
+        ) return undefined
+        const manifest = manifestOf(ctx, row.name, base)
+        const packageName = manifest !== undefined && 'name' in manifest && typeof manifest.name === 'string'
+          ? manifest.name
+          : undefined
+        const approved = packageName === undefined ? undefined : allowedHostPlugins.get(packageName)
+        if (approved !== undefined) {
+          const pkg = ctx.get('pluginPackages')?.packageOf(row.name, base)
+          if (pkg !== undefined && pkg.version === approved.version && realpathSync(pkg.dir) === realpathSync(approved.path)) {
+            if (trustedHostPackages === undefined) return 'the signed Host runtime package catalog is unavailable'
+            const issue = dependencyClosureIssue(ctx, pkg, trustedHostPackages)
+            return issue
+          }
+          return `package ${JSON.stringify(packageName)} does not match its approved version and path`
+        }
+        if (packageName === undefined && row.name.startsWith('cordis:') && allowedHostPlugins.has(row.name)) return undefined
+        return packageName === undefined
+          ? `plugin ${JSON.stringify(row.name)} cannot be resolved to approved package code`
+          : `package ${JSON.stringify(packageName)} is not in the approved Host plugin allowlist`
+      }
       const manifest = manifestOf(ctx, row.name, base)
       if (manifest === undefined) return undefined
       const issue = evaluatePluginCompatibility(manifest, exemptions)
@@ -120,6 +210,20 @@ function preflight(
     let blocked = false
     for (const row of rows) {
       if (row.disabled === true && !row.group) continue
+      if (enterpriseServiceOrigin !== undefined) {
+        const packageName = manifestOf(ctx, row.name, base)
+        const name = packageName !== undefined && 'name' in packageName && typeof packageName.name === 'string'
+          ? packageName.name : row.name
+        if ((name === '@dsh-enterprise/harness-identity' || name === '@dsh-enterprise/harness-provider')
+          && !enterpriseServiceOriginMatches(row.config, enterpriseServiceOrigin)) {
+          throw new Error(`dsh: ${name} configuration differs from the signed enterprise service origin`)
+        }
+        if (name === '@dsh-enterprise/harness-identity' || name === '@dsh-enterprise/harness-provider') {
+          // The Loader evaluates expressions later; pin the detached entry now so a preceding plugin
+          // cannot change process.env between preflight and activation.
+          row.config = { ...(row.config as Record<string, unknown>), serviceOrigin: enterpriseServiceOrigin }
+        }
+      }
       const conflict = denial(row, base)
       if (conflict !== undefined) {
         deny(row, conflict)
@@ -130,7 +234,20 @@ function preflight(
       if ((row.group === true || row.name === 'cordis:group' || row.name === '@deepseek-ai/cordis-plugin-group')
         && Array.isArray(row.config) && check(row.config as EntryOptions[], base)) blocked = true
       if (row.name !== 'cordis:include' && row.name !== '@deepseek-ai/cordis-plugin-include') continue
-      const reached = includedConflicts(row, base)
+      if (allowedHostPlugins !== undefined) {
+        const config = row.config as { path?: unknown } | undefined
+        const path = config?.path
+        const hasFileScheme = typeof path === 'string' && path.startsWith('file:')
+        const isAbsoluteLocalPath = typeof path === 'string' && isAbsolute(path)
+        const isRelativeLocalPath = typeof path === 'string' && !/^[a-z][a-z\d+.-]*:/i.test(path)
+        if (typeof path !== 'string' || (!hasFileScheme && !isAbsoluteLocalPath && !isRelativeLocalPath)
+          || !['.yml', '.yaml', '.json'].includes(extname(path))) {
+          deny(row, 'its dynamic Include cannot be inspected against the approved Host plugin allowlist')
+          blocked = true
+          continue
+        }
+      }
+      const reached = includedConflicts(row, base, allowedHostPlugins !== undefined)
       if (reached !== undefined) {
         deny(row, reached)
         blocked = true
@@ -138,8 +255,8 @@ function preflight(
     }
     return blocked
   }
-  /** Whether a native Include reaches a denied plugin; an unreadable one has no compatibility opinion. */
-  const includedConflicts = (row: EntryOptions, base: string): string | undefined => {
+  /** Whether a native Include reaches a denied plugin or cannot be audited under strict policy. */
+  const includedConflicts = (row: EntryOptions, base: string, failClosed = false): string | undefined => {
     const config = row.config as { path?: unknown; patches?: PatchOptions[]; initial?: EntryOptions[] } | undefined
     if (typeof config?.path !== 'string' || !['.yml', '.yaml', '.json'].includes(extname(config.path))) {
       // A dynamic Include is resolved by the Include plugin itself; this walk cannot judge its rows.
@@ -153,10 +270,14 @@ function preflight(
       let data: unknown
       try { data = load(readFileSync(filename, 'utf8'), { schema: entryListSchema }) }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || config.initial === undefined) return undefined
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || config.initial === undefined) {
+          return failClosed ? `its included file ${filename} could not be inspected against the approved Host plugin allowlist` : undefined
+        }
         data = config.initial
       }
-      if (!Array.isArray(data)) return undefined
+      if (!Array.isArray(data)) {
+        return failClosed ? `its included file ${filename} could not be inspected against the approved Host plugin allowlist` : undefined
+      }
       const children = applyEntryPatches(data as EntryOptions[], config.patches, patchWarning(ctx))
       return check(children, pathToFileURL(filename).href)
         ? `its included file ${filename} reaches an incompatible plugin, and that file is never rewritten`

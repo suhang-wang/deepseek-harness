@@ -5,7 +5,37 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, ipcMain, type BrowserWindowConstructorOptions, type IpcMainInvokeEvent } from 'electron'
 import type { DesktopLocale } from './locale.ts'
-import { WELCOME_IPC, type WelcomeOperations } from './welcome-api.ts'
+import { ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseWelcomeOperations, type WelcomeOperations } from './welcome-api.ts'
+
+const ENTERPRISE_ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+
+function qrCallback(qrUrl: string): Readonly<{ origin: string; pathname: string; state: string; appid: string }> {
+  const qr = new URL(qrUrl)
+  if (qr.origin !== 'https://open.work.weixin.qq.com' || qr.pathname !== '/wwopen/sso/qrConnect') {
+    throw new Error('desktop enterprise welcome: invalid QR login origin')
+  }
+  const callback = new URL(qr.searchParams.get('redirect_uri') ?? '')
+  const state = qr.searchParams.get('state')
+  const appid = qr.searchParams.get('appid')
+  if (callback.protocol !== 'https:' || callback.username || callback.password || callback.search || callback.hash
+    || callback.pathname !== '/api/enterprise/v1/auth/wecom/callback' || !state || !/^[A-Za-z0-9_-]{43}$/u.test(state)
+    || !appid || !/^[A-Za-z0-9_-]{1,128}$/u.test(appid)) {
+    throw new Error('desktop enterprise welcome: invalid QR login callback')
+  }
+  return { origin: callback.origin, pathname: callback.pathname, state, appid }
+}
+
+function matchingQrCallback(candidate: string, expected: ReturnType<typeof qrCallback>): boolean {
+  try {
+    const url = new URL(candidate)
+    return url.origin === expected.origin && url.pathname === expected.pathname
+      && !url.username && !url.password && !url.hash
+      && url.searchParams.getAll('code').length === 1 && !!url.searchParams.get('code')
+      && url.searchParams.getAll('state').length === 1 && url.searchParams.get('state') === expected.state
+      && url.searchParams.getAll('appid').length === 1 && url.searchParams.get('appid') === expected.appid
+      && [...url.searchParams.keys()].every(key => key === 'code' || key === 'state' || key === 'appid')
+  } catch { return false }
+}
 
 /**
  * Resolve the fixed-size welcome window's native material and controls.
@@ -48,6 +78,99 @@ export function welcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopL
 }
 
 let disposeActiveHandlers: (() => void) | undefined
+
+/** Same local, sandboxed document with an enterprise-only preload surface. */
+export function enterpriseWelcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopLocale): BrowserWindowConstructorOptions {
+  const options = welcomeWindowOptions(platform, locale)
+  return {
+    ...options,
+    title: locale.id === 'zh-CN' ? 'DeepSeek Harness 企业版' : 'DeepSeek Harness Enterprise',
+    webPreferences: {
+      ...options.webPreferences,
+      additionalArguments: [`--dsh-welcome-locale=${locale.id}`, '--dsh-welcome-mode=enterprise'],
+    },
+  }
+}
+
+/** Open enterprise sign-in without installing any personal-account or API-key IPC handlers. */
+export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operations: EnterpriseWelcomeOperations): Promise<BrowserWindow> {
+  const window = new BrowserWindow(enterpriseWelcomeWindowOptions(process.platform, locale))
+  disposeActiveHandlers?.()
+  let active = true
+  let transition: Promise<void> | undefined
+  let expectedQrCallback: ReturnType<typeof qrCallback> | undefined
+  let callbackForwarded = false
+  const enterWorkspace = (state: Awaited<ReturnType<EnterpriseWelcomeOperations['read']>>): Promise<void> => {
+    if (state.status !== 'signed-in') throw new Error('desktop enterprise welcome: unconfirmed identity state')
+    transition ??= Promise.resolve().then(() => operations.onSignedIn(state))
+    return transition
+  }
+  const disposeHandlers = (): void => {
+    if (!active) return
+    active = false
+    for (const channel of Object.values(ENTERPRISE_WELCOME_IPC)) ipcMain.removeHandler(channel)
+    disposeActiveHandlers = undefined
+  }
+  disposeActiveHandlers = disposeHandlers
+  const assertSender = (event: IpcMainInvokeEvent): void => {
+    if (!active || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
+      throw new Error('desktop enterprise welcome: rejected action from an unowned frame')
+    }
+  }
+  ipcMain.handle(ENTERPRISE_WELCOME_IPC.read, async (event) => {
+    assertSender(event)
+    const state = await operations.read()
+    if (state.status === 'signed-in') await enterWorkspace(state)
+    return state
+  })
+  ipcMain.handle(ENTERPRISE_WELCOME_IPC.begin, (event) => {
+    assertSender(event)
+    expectedQrCallback = undefined
+    return operations.beginLogin()
+  })
+  ipcMain.handle(ENTERPRISE_WELCOME_IPC.beginQr, async (event) => {
+    assertSender(event)
+    expectedQrCallback = undefined
+    const result = await operations.beginQrLogin()
+    expectedQrCallback = qrCallback(result.qrUrl)
+    callbackForwarded = false
+    return result
+  })
+  ipcMain.handle(ENTERPRISE_WELCOME_IPC.finish, async (event, attemptId: unknown) => {
+    assertSender(event)
+    if (typeof attemptId !== 'string' || !ENTERPRISE_ATTEMPT_ID.test(attemptId)) {
+      throw new Error('desktop enterprise welcome: invalid attempt')
+    }
+    const result = await operations.finishLogin(attemptId)
+    if (result.status === 'signed-in') {
+      await enterWorkspace(await operations.read())
+    }
+    return result
+  })
+  window.once('closed', disposeHandlers)
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event) => {
+    event.preventDefault()
+    const expected = expectedQrCallback
+    if (!active || !expected || callbackForwarded || !matchingQrCallback(event.url, expected)) return
+    callbackForwarded = true
+    // WeCom redirects the embedded QR page through the top frame. Keep the
+    // trusted local welcome page alive while completing the one-time callback.
+    void fetch(event.url, { redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(10_000) })
+      .then(response => { if (!response.ok) callbackForwarded = false })
+      .catch(() => { callbackForwarded = false })
+  })
+  try {
+    await window.loadFile(join(app.getAppPath(), 'renderer', 'enterprise-welcome.html'))
+  } catch (error) {
+    disposeHandlers()
+    if (!window.isDestroyed()) window.destroy()
+    throw error
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Another window can replace ownership during loadFile.
+  if (active && !window.isDestroyed()) window.show()
+  return window
+}
 
 /**
  * Open the process's sole welcome window with desktop-owned operations.

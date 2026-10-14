@@ -57,12 +57,22 @@ it('omits development artifacts while preserving executable modules, assets and 
       mkdirSync(join(modules, path, '..'), { recursive: true })
       writeFileSync(join(modules, path), `payload:${path}`)
     }
+    const packageNames = ['example', 'fs-ext', 'node-pty', '@koromix/koffi-win32-x64',
+      '@mixmark-io/domino', '@img/sharp-win32-x64', '@deepseek-ai/libreoffice-kit-wasm',
+      '@deepseek-ai/libreoffice-kit-darwin-arm64', '@deepseek-ai/libreoffice-kit-win32-x64']
+    for (const name of packageNames) {
+      writeFileSync(join(modules, name, 'package.json'), JSON.stringify({ name, version: '1.0.0' }))
+    }
     cpSync(modules, join(output, 'node_modules'), {
       recursive: true, dereference: true,
       filter: path => desktopRuntimeFileExclusion(relative(modules, path), windows, 'win32-x64') === undefined,
     })
     for (const path of removed) expect(existsSync(join(output, 'node_modules', path)), path).toBe(false)
-    for (const path of retained) expect(readFileSync(join(output, 'node_modules', path), 'utf8'), path).toBe(`payload:${path}`)
+    for (const path of retained) {
+      if (path === 'example/package.json') {
+        expect(JSON.parse(readFileSync(join(output, 'node_modules', path), 'utf8'))).toEqual({ name: 'example', version: '1.0.0' })
+      } else expect(readFileSync(join(output, 'node_modules', path), 'utf8'), path).toBe(`payload:${path}`)
+    }
     const sealed = writeDesktopRuntime(output, runtime.release, runtime.sharedPackages.map(entry => entry.name))
     expect(await verifyDesktopRuntime(output, runtime.release.version)).toEqual(sealed)
     expect(readFileSync(join(modules, removed[0]!), 'utf8')).toBe(`payload:${removed[0]}`)

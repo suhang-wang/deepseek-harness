@@ -38,11 +38,17 @@ function assertSupportedTarget(target) {
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
- * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
+ * @param {'official' | 'enterprise'} edition - Packaged product edition.
+ * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, packedEnterprise: string, downloads: string }} Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target) {
+export function desktopTargetBuildPaths(target, edition = 'official') {
   assertSupportedTarget(target)
-  const root = join(BUILD_ROOT, 'targets', target)
+  if (edition !== 'official' && edition !== 'enterprise') {
+    throw new Error(`desktop build paths: unsupported edition ${String(edition)}`)
+  }
+  const root = edition === 'enterprise'
+    ? join(BUILD_ROOT, 'enterprise', 'targets', target)
+    : join(BUILD_ROOT, 'targets', target)
   const packed = join(root, 'packed')
   return {
     root,
@@ -56,6 +62,7 @@ export function desktopTargetBuildPaths(target) {
     packedDsh: join(packed, 'dsh'),
     packedVendor: join(packed, 'vendor'),
     packedLandlock: join(packed, 'landlock'),
+    packedEnterprise: join(packed, 'enterprise'),
     downloads: join(BUILD_ROOT, 'downloads'),
   }
 }
@@ -86,7 +93,8 @@ export function resolveDesktopTargetBuildPaths(
   hostPlatform = process.platform,
   hostArch = process.arch,
 ) {
-  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
+  const edition = env.DSH_DESKTOP_ENTERPRISE_MODE === '1' ? 'enterprise' : 'official'
+  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), edition)
 }
 
 /**

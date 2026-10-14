@@ -13,6 +13,7 @@ export interface DesktopTargetBuildPaths {
   readonly packedDsh: string
   readonly packedVendor: string
   readonly packedLandlock: string
+  readonly packedEnterprise: string
   readonly downloads: string
 }
 
@@ -32,9 +33,10 @@ export function resolveDesktopBuildTarget(
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param target - Supported Desktop target name.
+ * @param edition - Packaged product edition.
  * @returns Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget): DesktopTargetBuildPaths
+export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, edition?: 'official' | 'enterprise'): DesktopTargetBuildPaths
 
 /**
  * Return the platform and architecture of the payload one release target prepares.

@@ -10,6 +10,9 @@
     "lib/index.js",
     "lib/cli.js"
   ],
+  "scripts": {
+    "build": "tsc -b && tsdown --config-loader native && node scripts/verify-build.mjs"
+  },
   "dependencies": {
     "koffi": "^3.1.0",
     "@deepseek-ai/libreoffice-kit": "^0.1.5",

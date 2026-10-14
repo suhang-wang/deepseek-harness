@@ -11,7 +11,7 @@
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
@@ -232,6 +232,26 @@ export interface RunProfileOptions {
   args: readonly string[]
   /** Application-owned package runtime, scoped to plugin package operations. */
   packageManager?: ProfileContext['packageManager']
+  /** Immutable, launcher-owned allowlist for code that may execute in the Host process. */
+  allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+  trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+  /** Signed enterprise service origin supplied by the native Desktop launcher. */
+  enterpriseServiceOrigin?: string
+}
+
+function snapshotPackageRecords(plugins: RunProfileOptions['allowedHostPlugins'], uniqueBy: 'name' | 'path'): RunProfileOptions['allowedHostPlugins'] {
+  if (plugins === undefined) return undefined
+  if (!Array.isArray(plugins)) throw new TypeError('dsh: approved Host plugins must be an array')
+  const copy = plugins.map((candidate: unknown) => {
+    if (candidate === null || typeof candidate !== 'object') throw new TypeError('dsh: invalid approved Host plugin')
+    const item = candidate as Record<string, unknown>
+    if (typeof item.name !== 'string' || item.name.trim() !== item.name || item.name.length === 0
+      || typeof item.version !== 'string' || item.version.length === 0
+      || typeof item.path !== 'string' || !isAbsolute(item.path)) throw new TypeError('dsh: invalid approved Host plugin')
+    return Object.freeze({ name: item.name, version: item.version, path: item.path })
+  })
+  if (new Set(copy.map(item => item[uniqueBy])).size !== copy.length) throw new TypeError('dsh: approved Host plugins must be unique')
+  return Object.freeze(copy)
 }
 
 /**
@@ -242,6 +262,20 @@ export interface RunProfileOptions {
  * @throws after disposing startup resources; cleanup failures retain the original error.
  */
 export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
+  if (options.enterpriseServiceOrigin !== undefined) {
+    let canonical = false
+    try {
+      const url = new URL(options.enterpriseServiceOrigin)
+      canonical = url.protocol === 'https:' && url.origin === options.enterpriseServiceOrigin
+        && url.hostname.length > 0 && url.username === '' && url.password === ''
+    } catch { /* Invalid enterprise origin fails below. */ }
+    if (!canonical || process.env.DSH_ENTERPRISE_SERVICE_ORIGIN !== options.enterpriseServiceOrigin
+      || options.environment.getFrom('DSH_ENTERPRISE_SERVICE_ORIGIN', ['process'])?.value !== options.enterpriseServiceOrigin) {
+      throw new Error('dsh: signed enterprise service origin differs from the Host launch environment')
+    }
+  }
+  const allowedHostPlugins = snapshotPackageRecords(options.allowedHostPlugins, 'name')
+  const trustedHostPackages = snapshotPackageRecords(options.trustedHostPackages, 'path')
   // Before the first plugin mounts and before anything can issue a request: Node's fetch ignores the
   // proxy environment on its own, so every profile would otherwise connect directly. Resolving from
   // the launcher's snapshot — not `process.env` — is what lets a proxy declared in a `.env` layer
@@ -284,15 +318,18 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     })
 
     const rootConfig = join(composed.profile.dir, PROFILE_ROOT_FILENAME)
-    const profileContext: ProfileContext = {
+    const profileContext: ProfileContext = Object.freeze({
       name: options.profile,
       ...(options.packageManager === undefined ? {} : { packageManager: options.packageManager }),
       dir: composed.profile.dir, patchPath: composed.profile.patchPath,
       installAnchor: options.resolvedProfile?.installAnchor ?? INSTALL_ANCHOR,
       startedBundles: composed.profile.layers.map(layer => layer.packageName),
+      ...(allowedHostPlugins === undefined ? {} : { allowedHostPlugins }),
+      ...(trustedHostPackages === undefined ? {} : { trustedHostPackages }),
+      ...(options.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: options.enterpriseServiceOrigin }),
       cwd: process.cwd(), home: resolveDshHome(),
       overlays: composed.overlays, telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED,
-    }
+    })
     const ctx = await boot(NAME, rootConfig, readProfilePatches(NAME, profileContext, composed.profile), async (hostCtx) => {
       app.current = hostCtx
       hostCtx.provide('profileContext', profileContext)
