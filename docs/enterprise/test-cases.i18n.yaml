@@ -18,20 +18,20 @@
   en: 65b4241be46ffc80
   zh: 0d90b55c5e330ffd
 /enterprise-acceptance-test-cases/authentication:
-  en: af411430a02ea71f
-  zh: 366eda7dab6d56c6
+  en: 62be99360e38055b
+  zh: c819b116537c4ab4
 /enterprise-acceptance-test-cases/organization-and-policy:
-  en: 4834ed8fc099cd95
-  zh: 98f7b6a10920f4f7
+  en: 7024948d410cd4f6
+  zh: 6dfb5c4aa693d1c8
 /enterprise-acceptance-test-cases/gateway-and-file-isolation:
-  en: e7569806a52a755f
-  zh: f638f3f58bd3cd46
+  en: 90108fa1349f2671
+  zh: 72c3c8bce23e72a5
 /enterprise-acceptance-test-cases/quota-and-failures:
   en: 29339cf9a87d8448
   zh: 5327ac440f8e6429
 /enterprise-acceptance-test-cases/administration-and-desktop-upgrades:
-  en: 1429fc2206eba164
-  zh: 053d7be6c3c589cd
+  en: 146f72a8c97724fa
+  zh: bf7c4048ecad2b94
 /enterprise-acceptance-test-cases/release-acceptance:
   en: 2b41f2ef175d08e9
   zh: 135f71ba0498491e

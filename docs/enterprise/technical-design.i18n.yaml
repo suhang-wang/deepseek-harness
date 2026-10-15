@@ -18,8 +18,8 @@
   en: d789dd2aeed1f0b4
   zh: c3712fbbc5db690d
 /enterprise-technical-design/desktop-authentication:
-  en: 32fd89a19acd73db
-  zh: e68cdee92bb0a815
+  en: d54317444822136d
+  zh: 156913adbb98870d
 /enterprise-technical-design/organization-synchronization:
   en: 69e8ae213a376d1f
   zh: ab31dc2c4ec57cd1
@@ -27,17 +27,17 @@
   en: 03ff3a4a9d53af5e
   zh: 5b1aba5d3160d86a
 /enterprise-technical-design/messages-and-files-gateway:
-  en: a49ad9a73ce95d62
-  zh: 32380977cc1230e9
+  en: 6262e4cb236786b3
+  zh: f5a935dc99139187
 /enterprise-technical-design/quota-ledger:
   en: 7a7c22bf9e91bd2c
   zh: 505cc356dc6ba274
 /enterprise-technical-design/data-and-apis:
-  en: 8f3972c0a403d719
-  zh: 9a4e5d8733e3d8de
+  en: 3e5278d3d2549b36
+  zh: 7631c7eab9630b66
 /enterprise-technical-design/security-and-operations:
-  en: 1de998ed5b40fd92
-  zh: ff7d383a7fc5ba83
+  en: 0cb9148a50d14cb8
+  zh: 7a0915ae23c10ee8
 /enterprise-technical-design/dev-note:
   en: 9f0007e6559f3856
   zh: d7beeb4cf7baea6a

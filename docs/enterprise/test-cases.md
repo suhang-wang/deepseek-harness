@@ -62,7 +62,7 @@ All cases below start as not executed. When implementing, record run ID, exact v
 | O05 / PR-02,12 | P0 | Start before first snapshot; age it past 60 minutes, then restore successful sync. | New login/inference fail while stale; sanitized directory alert is raised and clears after recovery. | U/I/C |
 | O06 / PR-02 | P1 | Run overlapping jobs and restart a lease owner. | One publisher; stale job cannot replace a newer snapshot. | I |
 | O07 / PR-02,04 | P0 | Rename/move departments and repeat the complete sync. | Stable-ID policy binding survives; published state is idempotent. | I/R |
-| P01 / PR-04 | P0 | Combine company/ancestor/peer/employee model restrictions and caps 8192/4096/2048. | Model intersection and deny priority are exact; output cap is 2048 and reasoning uses the most restrictive allowance. | U/I |
+| P01 / PR-04 | P0 | Combine company/ancestor/peer/employee model restrictions and caps 8192/4096/2048; attempt to enable an unqualified model ID. | Model intersection and deny priority are exact; output cap is 2048 and reasoning uses the most restrictive allowance; unqualified models cannot be enabled. | U/I |
 | P02 / PR-04 | P0 | Omit vs empty restrictions; progressively disallow preference, cost-department default, company default, then ordered fallbacks. | Inherit differs from deny-all; select the first permitted source in that order, or reject when none remains. | U/C |
 | P03 / PR-04,08 | P0 | Modify local endpoint/model, forge employee headers, or use stale policy. | Corporate gateway authenticates its session and denies forbidden requests. | I/C |
 | P04 / PR-04,09 | P0 | Two admins save with the same expected revision. | One succeeds; stale writer gets 409 without lost update. | I |
@@ -83,7 +83,7 @@ All cases below start as not executed. When implementing, record run ID, exact v
 | F01 / PR-05,08 | P0 | A uploads; B lists, retrieves, deletes, or references A file ID. | B sees no file, foreign ID is rejected before upstream/model call. | I/R |
 | F02 / PR-08 | P0 | A cache cleanup requests dsh-prefixed files owned by B. | Filtered listing and server ownership prevent deletion. | I/C |
 | F03 / PR-05,08 | P0 | Test ownership-filtered pagination and foreign IDs in historical Messages. | All and only owned files appear; every reference is checked. | I |
-| F04 / PR-05 | P0 | Refresh token after upload; reuse image and let files expire. | Safe reuse or reupload; expiry cleanup; no cross-user cache reuse. | C/R |
+| F04 / PR-05,08 | P0 | Refresh token after upload, rotate the provider key, then reuse an owned image and let files expire. | Safe reuse or reupload under its pinned key version; old encrypted key remains until file cleanup completes, then can retire; no cross-user cache reuse. | I/C/R |
 | F05 / PR-08,12 | P1 | Crash after upstream upload before ownership commit. | Orphan unavailable to employees; cleanup/reconciliation records survive. | I |
 | F06 / PR-05,08 | P0 | Exceed upload/expiry/media limits and trigger the adapter inline-image fallback. | Invalid uploads rejected; supported inline fallback still checks model/body/quota at the gateway. | I/C/R |
 
@@ -110,16 +110,16 @@ All cases below start as not executed. When implementing, record run ID, exact v
 
 | Case / requirement | Priority | Precondition and action | Expected result | Level |
 | --- | --- | --- | --- | --- |
-| S01 / PR-09 | P0 | Employee calls admin endpoints; first user logs in; leader syncs. | No automatic admin grants; all unauthorized admin requests fail. | I/R |
-| S02 / PR-09 | P0 | Admin updates policy/quota, disables employee, and adjusts usage. | Actor/object/revision/reason/outcome are audited with no secret/content. | I |
-| S03 / PR-08,09 | P0 | Attempt admin CSRF, injection, hostile error text, and auth brute force. | Writes protected, SQL parameterized, UI safe, entry points rate-limited. | I/D |
+| S01 / PR-09 | P0 | Bound in-scope employee scans and enters generated setup code; race submissions, expire/regenerate/reuse code, scan and call admin endpoints as another employee, then lose all owners. | No admin session before code succeeds; one owner grant and one consumed code; invalid, expired, duplicate and mismatched attempts fail; ordinary employees are denied and initialization never reopens because owner count becomes zero. | I/R |
+| S02 / PR-08,09 | P0 | Owner grants, updates and revokes administrator/owner roles with revisions; try to remove the last owner; admin edits policy/quota; owner rotates provider key. | Stale grants return 409, last owner remains, changed sessions revoke immediately, non-owners cannot grant/rotate; audited changes omit secrets/content, key reads never reveal plaintext, new calls use new key and active calls retain pinned version. | I/R |
+| S03 / PR-08,09,12 | P0 | Attempt admin CSRF, injection, hostile error text, setup-code brute force and replay, restore backup, and run explicit owner recovery. | Writes protected, SQL parameterized, UI safe, persistent attempt limits enforced; recovery requires operator reason and audit, never a public reset; old sessions fail after restore. | I/D |
 | S04 / PR-08 | P0 | Capture model-related metadata and conversation-content egress during a task. | Necessary content goes only to approved inference; no optional official log/analytics upload; authorized login/update/tool traffic remains allowed. | C/D |
 | D01 / PR-10 | P0 | Install signed/notarized enterprise app beside personal app. | Correct identity and independent userData/home; no credential or session auto-import. | D |
-| D02 / PR-10,11 | P0 | Boot packaged app with enterprise bundle and disabled personal routes. | Real Loader boots enterprise login/provider/UI; no official account fallback. | C/D |
+| D02 / PR-01,08,10,11 | P0 | Boot packaged app with enterprise bundle and disabled personal routes; sign in as A and try to request B's profile. | Real Loader boots enterprise login/provider/UI without official account fallback; desktop shows only A's ID, department paths, cost department, effective models and quota. | C/D |
 | D03 / PR-10,11 | P0 | Update from company feed; try official/wrong/unsigned artifacts. | Qualified enterprise update works; invalid identity/signature/channel rejected. | D |
 | D04 / PR-11 | P0 | Install an unapproved Host plugin, then run an incompatible plugin/API pair and outdated desktop. | Enterprise profile refuses unapproved Host code before activation; clear upgrade action; server refuses unsupported protocol; no compatibility bypass. | C/D |
 | D05 / PR-11 | P0 | Upgrade existing sessions and restart older app on newer schema. | Forward migration preserves history; unsupported downgrade refuses safely. | C/D |
-| D06 / PR-11,12 | P0 | Fail migration, restore an old backup, then try pre-restore tokens and consumed login attempts. | Old authentication is invalid; organization/admin/disable state rechecked, uncertain employees frozen, ledger reconciled before reopening. | I/D |
+| D06 / PR-08,09,11,12 | P0 | Explicitly import legacy administrator IDs and key, fail migration, restore an old backup, then try pre-restore tokens and consumed login attempts. | No silent grant or key disclosure; old authentication is invalid; organization/admin/disable state and key-version/file references are rechecked, uncertain employees frozen, ledger reconciled before reopening. | I/D |
 | D07 / PR-12 | P1 | Run 40 streams and simulate slow consumer/upstream. | Measure admission/relay targets, bounded buffers, cancellation, and alerts. | I/D |
 | D08 / PR-11 | P0 | Qualify an upstream update with login, tools, Files, and saved sessions. | Pinned combination passes critical regression; artifacts record exact versions. | C/R/D |
 | D09 / PR-08,10 | P0 | Sign out A and sign in B under the same OS account. | Host restarts into B data space; no A history, credentials, or upload cache is reused by the UI. | C/D |
