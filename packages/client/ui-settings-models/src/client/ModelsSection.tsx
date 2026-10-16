@@ -21,7 +21,7 @@
  * post-apply reload.
  */
 
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button, IconPlusOutlineRegular, Modal, SegmentedControl } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
@@ -251,6 +251,14 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
     ? { ...row, entry: { ...row.entry, displayName: t('deepSeekAccount') } } : row) }
   /** A new or failed surface waits for a current snapshot; background refreshes preserve its drafts. */
   const [hasReadySnapshot, setHasReadySnapshot] = useState(state.status === 'ready')
+  const hasManagedCatalog = state.rows.some(row => row.managedCatalog !== undefined)
+  useEffect(() => {
+    if (!hasManagedCatalog) return
+    if (controller.markManagedCatalogShown()) void controller.load()
+    const refresh = (): void => { void controller.load() }
+    window.addEventListener('focus', refresh)
+    return () => { window.removeEventListener('focus', refresh) }
+  }, [controller, hasManagedCatalog])
   if (state.status === 'ready' && !hasReadySnapshot) setHasReadySnapshot(true)
   if (state.status === 'error' && hasReadySnapshot) setHasReadySnapshot(false)
   const [editing, setEditing] = useState<EditorTarget | undefined>(undefined)
@@ -366,6 +374,7 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
   // step: whether the user already has a provider to talk to.
   const anyUsable = state.rows.some(providerUsable)
   const configured = state.rows.filter(row => row.configured)
+  const managed = state.rows.filter(row => row.managedCatalog !== undefined)
   const configurable = state.rows.filter(row => state.namespaces.has(row.entry.settingsNs))
   const addable: AddableRow[] = state.rows.flatMap((row) => {
     const namespace = state.namespaces.get(row.entry.settingsNs)
@@ -423,6 +432,24 @@ function Loaded({ injected, renderSlot }: { injected: ModelsSectionFace; renderS
           </p>
         )}
       <ul className={styles['rows']}>
+        {managed.map(row => (
+          <li key={row.entry.provider} className={styles['rowCard']}
+            aria-label={`${row.entry.displayName} · ${t('managedTag')}`}>
+            <div className={styles['rowHead']}>
+              <span className={styles['rowIdentity']}>
+                <span className={styles['rowName']}>{row.entry.displayName}</span>
+              </span>
+            </div>
+            {row.managedCatalog?.status === 'ready' && row.managedCatalog.models.length > 0
+              ? <ul className={styles['managedModelList']}>
+                  {row.managedCatalog.models.map(model => <li key={model.id}>{model.name}</li>)}
+                </ul>
+              : <p className={styles['managedModelStatus']} role="status">
+                  {t(row.managedCatalog?.status === 'loading' ? 'managedModelsLoading'
+                    : row.managedCatalog?.status === 'error' ? 'managedModelsUnavailable' : 'noManagedModels')}
+                </p>}
+          </li>
+        ))}
         {configured.map((row) => {
           const target = targetOf(row)
           const namespace = state.namespaces.get(target.settingsNs)

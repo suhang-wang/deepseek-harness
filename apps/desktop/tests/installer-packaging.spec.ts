@@ -12,6 +12,25 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 describe('installer preparation preserves application dependencies', () => {
+  it('uses the isolated enterprise target for builder output and runtime inputs', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const base = { DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_TARGET_PLATFORM: 'darwin',
+      DSH_DESKTOP_TARGET_ARCH: 'arm64', DSH_DESKTOP_UNSIGNED: '1' }
+    const official = createElectronBuilderConfig(base, 'darwin', 'arm64')
+    const enterprise = createElectronBuilderConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local', DSH_DESKTOP_ENTERPRISE_MODE: '1' }, 'darwin', 'arm64')
+    expect(enterprise.directories.output).toContain('/enterprise/targets/mac-arm64/unsigned-artifacts')
+    expect(enterprise).toMatchObject({ appId: 'com.deepseek.harness.enterprise.local', productName: 'DeepSeek Harness Enterprise',
+      artifactName: 'deepseek-harness-enterprise-${version}-${os}-${arch}-unsigned.${ext}',
+      protocols: [{ name: 'DeepSeek Harness Enterprise', schemes: ['dsh-enterprise'] }],
+      extraMetadata: { dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local' } })
+    expect(official.extraMetadata.dshDesktopEdition).toBe('official')
+    expect(() => createElectronBuilderConfig({ ...base, DSH_DESKTOP_ENTERPRISE_MODE: '1' }, 'darwin', 'arm64')).toThrow(/enterprise app ID/u)
+    expect(() => createElectronBuilderConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local' }, 'darwin', 'arm64')).toThrow(/provisional enterprise app ID/u)
+    expect(enterprise.files.some(entry => typeof entry !== 'string'
+      && entry.to === 'dsh' && entry.from.includes('/enterprise/targets/mac-arm64/dsh'))).toBe(true)
+    expect(official.directories.output).toContain('/targets/mac-arm64/unsigned-artifacts')
+    expect(official.directories.output).not.toContain('/enterprise/')
+  })
   it.each(['win32', 'darwin'] as const)('rejects a missing production policy before signing on %s', async (platform) => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer',

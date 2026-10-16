@@ -1,6 +1,7 @@
 /** Resolve the Desktop auto-update channel and its Tencent COS destination. */
 
 import { valid } from 'semver'
+import { LOCAL_ENTERPRISE_APP_ID, resolveDesktopAppId } from './desktop-release-environment.mjs'
 
 /** Environment variable that selects the Desktop update deployment. */
 export const DESKTOP_AUTO_UPDATE_ENV = 'DSH_DESKTOP_AUTO_UPDATE_ENV'
@@ -145,13 +146,24 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
   const environment = resolveDesktopAutoUpdateEnvironment(env)
   const target = resolveDesktopAutoUpdateTarget(platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[environment]
-  let origin = deployment.fixedOrigin
+  const enterprise = env.DSH_DESKTOP_ENTERPRISE_MODE === '1'
+  let origin = enterprise
+    ? httpsOrigin(requiredEnvironmentValue(env, 'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN'), 'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN')
+    : deployment.fixedOrigin
+  if (enterprise && origin === 'https://download.deepseek.com') {
+    throw new Error('desktop auto-update: enterprise update origin must not use the official DeepSeek download host')
+  }
   if (origin === undefined) {
     const { originEnvName } = deployment
     if (originEnvName === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
     origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
   }
-  let releasePrefix = 'dsh-desk'
+  const enterpriseAppId = enterprise && env.DSH_DESKTOP_APP_ID !== undefined ? resolveDesktopAppId(env) : undefined
+  let releasePrefix = enterprise
+    ? enterpriseAppId === undefined || enterpriseAppId === LOCAL_ENTERPRISE_APP_ID
+      ? 'dsh-enterprise'
+      : `dsh-enterprise/${enterpriseAppId}`
+    : 'dsh-desk'
   if (environment === 'test') {
     const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')
     if (!/^[a-f0-9]{32}$/u.test(releaseId)) {
@@ -180,6 +192,9 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
  * @throws {Error} When the selected deployment lacks a bucket or valid updater configuration.
  */
 export function resolveDesktopUploadConfig(env, platform, arch) {
+  if (env.DSH_DESKTOP_ENTERPRISE_MODE === '1') {
+    throw new Error('desktop auto-update: enterprise upload requires a qualified enterprise release publisher')
+  }
   const update = resolveDesktopAutoUpdateConfig(env, platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[update.environment]
   return {

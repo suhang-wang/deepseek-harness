@@ -3,6 +3,12 @@
 /** Environment variable that supplies the Electron application identifier. */
 export const DESKTOP_APP_ID_ENV = 'DSH_DESKTOP_APP_ID'
 
+/** Local-only identifier; a signed enterprise build must use an identifier owned by its publisher. */
+export const LOCAL_ENTERPRISE_APP_ID = 'com.deepseek.harness.enterprise.local'
+export const OFFICIAL_APP_ID = 'com.deepseek.harness'
+export const ENTERPRISE_PROTOCOL_SCHEME_ENV = 'DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME'
+export const ENTERPRISE_PRODUCT_NAME_ENV = 'DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME'
+
 /** Environment variable that supplies electron-builder's macOS certificate qualifier. */
 export const MACOS_SIGNING_IDENTITY_ENV = 'DSH_DESKTOP_MACOS_SIGNING_IDENTITY'
 
@@ -66,6 +72,68 @@ export function resolveDesktopAppId(env) {
     throw new Error(`desktop release environment: ${DESKTOP_APP_ID_ENV} must be a reverse-DNS identifier`)
   }
   return appId
+}
+
+/**
+ * Select the packaged edition and reject identities that could collide with the other edition.
+ * Ownership of a signed identifier must also be confirmed by the enterprise publisher.
+ * @param {NodeJS.ProcessEnv} env - Selected packaging environment.
+ * @returns {{ edition: 'official' | 'enterprise', appId: string, productName: string, protocolScheme: string, artifactPrefix: string }}
+ */
+export function resolveDesktopPackageIdentity(env) {
+  const mode = env.DSH_DESKTOP_ENTERPRISE_MODE
+  if (mode !== undefined && mode !== '1') {
+    throw new Error('desktop release environment: DSH_DESKTOP_ENTERPRISE_MODE must be 1 when present')
+  }
+  const appId = resolveDesktopAppId(env)
+  if (mode === undefined) {
+    if (env[ENTERPRISE_PROTOCOL_SCHEME_ENV] !== undefined || env[ENTERPRISE_PRODUCT_NAME_ENV] !== undefined) {
+      throw new Error('desktop release environment: enterprise identity settings require enterprise mode')
+    }
+    if (appId === LOCAL_ENTERPRISE_APP_ID) {
+      throw new Error('desktop release environment: provisional enterprise app ID requires enterprise mode')
+    }
+    return { edition: 'official', appId, productName: 'DeepSeek Harness', protocolScheme: 'dsh', artifactPrefix: 'deepseek-harness' }
+  }
+  if (!/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){2,}$/u.test(appId)) {
+    throw new Error('desktop release environment: enterprise app ID must be a lowercase reverse-DNS identifier')
+  }
+  const customScheme = env[ENTERPRISE_PROTOCOL_SCHEME_ENV]
+  if (customScheme !== undefined && (!/^[a-z][a-z0-9-]{2,63}$/u.test(customScheme)
+    || ['dsh', 'dsh-app', 'http', 'https', 'file', 'mailto'].includes(customScheme))) {
+    throw new Error(`desktop release environment: ${ENTERPRISE_PROTOCOL_SCHEME_ENV} must be a distinct lowercase URL scheme`)
+  }
+  const customProductName = env[ENTERPRISE_PRODUCT_NAME_ENV]
+  if (customProductName !== undefined && (customProductName.length < 3 || customProductName.length > 64
+    || !/^[\p{L}\p{N}][\p{L}\p{N} ._-]*[\p{L}\p{N}]$/u.test(customProductName)
+    || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(customProductName))) {
+    throw new Error(`desktop release environment: ${ENTERPRISE_PRODUCT_NAME_ENV} must be a safe display name of 3 to 64 characters`)
+  }
+  if ((customScheme === undefined) !== (customProductName === undefined)) {
+    throw new Error('desktop release environment: a custom enterprise scheme and product name must be configured together')
+  }
+  if (appId === LOCAL_ENTERPRISE_APP_ID && (customScheme !== undefined || customProductName !== undefined)) {
+    throw new Error('desktop release environment: a custom enterprise identity requires its own app ID')
+  }
+  if (customScheme === 'dsh-enterprise' && customProductName !== undefined) {
+    throw new Error('desktop release environment: a custom enterprise product requires its own protocol scheme')
+  }
+  if (customProductName !== undefined && ['deepseek harness', 'deepseek harness enterprise'].includes(customProductName.toLowerCase())) {
+    throw new Error('desktop release environment: a custom enterprise client requires a distinct product name')
+  }
+  if (appId !== LOCAL_ENTERPRISE_APP_ID && (!customScheme || !customProductName)) {
+    throw new Error('desktop release environment: custom enterprise app ID requires a distinct protocol scheme and product name')
+  }
+  if (env.DSH_DESKTOP_UNSIGNED !== '1' && (appId === LOCAL_ENTERPRISE_APP_ID || appId.startsWith('com.deepseek.'))) {
+    throw new Error('desktop release environment: signed enterprise app ID must be an explicit identifier owned by the enterprise publisher')
+  }
+  if (appId !== LOCAL_ENTERPRISE_APP_ID && appId.startsWith('com.deepseek.')) {
+    throw new Error('desktop release environment: enterprise app ID must not use the official namespace')
+  }
+  return { edition: 'enterprise', appId, productName: customProductName ?? 'DeepSeek Harness Enterprise',
+    protocolScheme: customScheme ?? 'dsh-enterprise',
+    artifactPrefix: customProductName === undefined && customScheme === undefined
+      ? 'deepseek-harness-enterprise' : `deepseek-harness-enterprise-${appId}` }
 }
 
 /**

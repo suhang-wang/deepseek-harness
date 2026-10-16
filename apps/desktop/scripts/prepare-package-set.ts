@@ -29,6 +29,13 @@ import { resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
 
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const ROOT_PACKAGES = [DSH_PACKAGE, DESKTOP_HOST_PACKAGE] as const
+const ENTERPRISE_BUNDLE_PACKAGE = '@dsh-enterprise/harness-bundle'
+const ENTERPRISE_PACKAGES = new Set([
+  ENTERPRISE_BUNDLE_PACKAGE,
+  '@dsh-enterprise/harness-identity',
+  '@dsh-enterprise/harness-provider',
+  '@dsh-enterprise/harness-ui',
+])
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 
@@ -54,10 +61,12 @@ function dependencyNames(manifest: Readonly<Record<string, unknown>>, section: s
  * Select workspace dependencies rooted at dsh and its private Host; npm resolves external packages.
  * Reads the repository workspace manifest and package manifests to distinguish required local packages from npm-resolved externals.
  * @param available - Packed packages indexed by package name.
+ * @param extraRoots - Explicit external bundle roots included in this package set.
  * @returns Selected packages sorted by name.
  */
 export function selectDesktopPackageClosure(
   available: ReadonlyMap<string, PackedDesktopPackage>,
+  extraRoots: readonly string[] = [],
 ): PackedDesktopPackage[] {
   const workspace = yaml.load(readFileSync(join(REPOSITORY_ROOT, 'pnpm-workspace.yaml'), 'utf8')) as { packages: string[] }
   const workspaceNames = new Set(globSync(workspace.packages.map(pattern => `${pattern}/package.json`), { cwd: REPOSITORY_ROOT })
@@ -71,7 +80,7 @@ export function selectDesktopPackageClosure(
     for (const section of REQUIRED_DEPENDENCY_SECTIONS) {
       for (const dependency of dependencyNames(packed.manifest, section)) {
         if (available.has(dependency)) visit(dependency)
-        else if (workspaceNames.has(dependency)) {
+        else if (workspaceNames.has(dependency) || ENTERPRISE_PACKAGES.has(dependency)) {
           throw new Error(`desktop package set: ${name} requires unpacked package ${dependency}`)
         }
       }
@@ -80,7 +89,7 @@ export function selectDesktopPackageClosure(
       if (available.has(dependency)) visit(dependency)
     }
   }
-  for (const name of ROOT_PACKAGES) {
+  for (const name of [...ROOT_PACKAGES, ...extraRoots]) {
     if (!available.has(name)) throw new Error(`desktop package set: packed inputs omit ${name}`)
     visit(name)
   }
@@ -128,8 +137,8 @@ export function assertDesktopHostPackageFiles(files: readonly string[]): void {
 }
 
 /** Prepare a package set from release tarball directories. */
-export function prepareDesktopPackageSet(inputs: readonly string[], output: string): void {
-  const selected = selectDesktopPackageClosure(packedPackages(inputs))
+export function prepareDesktopPackageSet(inputs: readonly string[], output: string, extraRoots: readonly string[] = []): void {
+  const selected = selectDesktopPackageClosure(packedPackages(inputs), extraRoots)
   const host = selected.find(packed => packed.manifest.name === DESKTOP_HOST_PACKAGE)
   if (host === undefined) throw new Error(`desktop package set: selected closure omits ${DESKTOP_HOST_PACKAGE}`)
   assertDesktopHostPackageFiles(tarballFiles(host.tarball))
@@ -160,10 +169,12 @@ export function prepareDesktopPackageSet(inputs: readonly string[], output: stri
 
 function main(): void {
   const buildPaths = resolveDesktopTargetBuildPaths()
+  const enterprise = process.env.DSH_DESKTOP_ENTERPRISE_MODE === '1'
   const defaultInputs = [
     buildPaths.packedDsh,
     buildPaths.packedVendor,
     buildPaths.packedLandlock,
+    ...(enterprise ? [buildPaths.packedEnterprise] : []),
   ]
   const { values } = parseArgs({
     options: { from: { type: 'string', multiple: true }, out: { type: 'string' } },
@@ -171,7 +182,7 @@ function main(): void {
   })
   const inputs = (values.from ?? defaultInputs).map(path => resolve(REPOSITORY_ROOT, path))
   const output = values.out === undefined ? buildPaths.packageSet : resolve(REPOSITORY_ROOT, values.out)
-  prepareDesktopPackageSet(inputs, output)
+  prepareDesktopPackageSet(inputs, output, enterprise ? [ENTERPRISE_BUNDLE_PACKAGE] : [])
   console.log(`desktop package set: prepared ${output}`)
 }
 

@@ -2,6 +2,7 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
+import { mkdirSync, readFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,12 +20,19 @@ import {
   protocol,
   session,
   shell,
+  safeStorage,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
+  type Session,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
+import { KeychainSessionStore } from './keychain-session-store.ts'
+import { beginEnterpriseLoginAfterStorageReady } from './enterprise-login-preflight.ts'
+import { resolveEnterpriseDataSpace, environmentForEnterpriseSpace } from './enterprise-data-space.ts'
+import { EnterpriseNativeIdentityBinding } from './enterprise-native-binding.ts'
+import { EnterpriseBrowserSessions } from './enterprise-browser-sessions.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
 import { installDesktopDirectoryPicker } from './directory-picker.ts'
 import { installMicrophonePermissions } from './microphone-permissions.ts'
@@ -39,9 +47,10 @@ import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
 import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
-import { openWelcomeWindow } from './welcome-window.ts'
+import { openEnterpriseWelcomeWindow, openWelcomeWindow } from './welcome-window.ts'
 import { WELCOME_IPC, needsWelcome, type WelcomeNotice } from './welcome-api.ts'
 import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-backend.ts'
+import { connectEnterpriseWelcome, type EnterpriseWelcomeBackend } from './enterprise-welcome-backend.ts'
 import { DesktopUpdateJournal } from './update-journal.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
 import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from './update-schedule.ts'
@@ -61,9 +70,13 @@ import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
+import { resolveDesktopApplicationIdentity, type DesktopApplicationIdentity } from './enterprise-application-identity.ts'
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
+let disablePluginsForRecovery = async (): Promise<string | undefined> => {
+  throw new Error('Desktop profile is unavailable for plugin recovery')
+}
 let shuttingDown = false
 /**
  * Set by quit entries that must not ask: crash recovery exit and restart, and the
@@ -80,10 +93,6 @@ let backendReady = false
 /** Error-level console output of the primary window, attached to crash reports. */
 const rendererConsole = new RendererConsoleTail()
 
-// Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
-// set before ready so the first fatal report already resolves under it.
-app.setAppLogsPath()
-
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
 }
@@ -97,8 +106,7 @@ const recovery = new DesktopFatalRecovery({
   show: options => dialog.showMessageBox(options),
   stop: () => { shuttingDown = true; return stopForRecovery() },
   disablePlugins: async () => {
-    const manager = new DesktopProjectManager(resolveDesktopPaths(), runtimeResources())
-    const backupPath = await manager.disableAllPlugins()
+    const backupPath = await disablePluginsForRecovery()
     console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
   },
   exit: () => { quitWithoutConfirmation() },
@@ -148,6 +156,9 @@ interface RuntimeResources {
   readonly node: string
   readonly pnpm: string
   readonly dsh: string
+  readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+  readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+  readonly enterpriseServiceOrigin?: string
 }
 
 function runtimeResources(): RuntimeResources {
@@ -159,7 +170,17 @@ function runtimeResources(): RuntimeResources {
       : join(process.resourcesPath, 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs'))
   const dsh = (development ? process.env.DSH_DESKTOP_DSH_DIR : undefined)
     ?? (development ? join(app.getAppPath(), '.desktop-build', 'development', 'project') : join(app.getAppPath(), 'dsh'))
-  return { node, nodeBin, pnpm, dsh }
+  const runtimeManifest = development ? undefined : readDesktopRuntime(dsh)
+  const allowedHostPlugins = runtimeManifest?.allowedHostPlugins?.map(plugin => Object.freeze({
+    ...plugin, path: join(dsh, plugin.path),
+  }))
+  const trustedHostPackages = runtimeManifest?.trustedHostPackages?.map(plugin => Object.freeze({
+    ...plugin, path: join(dsh, plugin.path),
+  }))
+  return { node, nodeBin, pnpm, dsh,
+    ...(allowedHostPlugins === undefined ? {} : { allowedHostPlugins: Object.freeze(allowedHostPlugins) }),
+    ...(trustedHostPackages === undefined ? {} : { trustedHostPackages: Object.freeze(trustedHostPackages) }),
+    ...(runtimeManifest?.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: runtimeManifest.enterpriseServiceOrigin }) }
 }
 
 function developmentPrimaryRuntime(): string {
@@ -205,7 +226,7 @@ function platformLoginUrl(authorizeUrl: string): string {
   return url.href
 }
 
-function createWindow(preload: string, show = false, primary = false): BrowserWindow {
+function createWindow(preload: string, show = false, primary = false, browserSession?: Session): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -230,6 +251,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     } : {}),
     webPreferences: {
       preload,
+      ...(browserSession === undefined ? {} : { session: browserSession }),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -314,19 +336,31 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
   return window
 }
 
-async function main(): Promise<void> {
+async function main(applicationIdentity: DesktopApplicationIdentity): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
   const resources = runtimeResources()
-  const paths = resolveDesktopPaths()
+  const enterprisePackages = resources.allowedHostPlugins?.filter(plugin => plugin.name.startsWith('@dsh-enterprise/')) ?? []
+  const enterpriseMode = enterprisePackages.some(plugin => plugin.name === '@dsh-enterprise/harness-identity')
+    && enterprisePackages.some(plugin => plugin.name === '@dsh-enterprise/harness-bundle')
+  if ((applicationIdentity.edition === 'enterprise') !== enterpriseMode) {
+    throw new Error('desktop edition: packaged identity and enterprise runtime disagree')
+  }
+  if (enterprisePackages.length && !enterpriseMode) throw new Error('desktop runtime: incomplete enterprise identity policy')
+  if (enterpriseMode && resources.enterpriseServiceOrigin === undefined) {
+    throw new Error('desktop runtime: missing signed enterprise service origin')
+  }
+  const requiredBundles = enterpriseMode ? ['@dsh-enterprise/harness-bundle'] : []
+  const paths = enterpriseMode ? resolveEnterpriseDataSpace(app.getPath('userData'), null).paths : resolveDesktopPaths()
   const development = !app.isPackaged
   const primaryRuntime = development
     ? developmentPrimaryRuntime()
     : join(process.resourcesPath, 'runtime', 'primary-runtime')
-  const activeProject = paths.profile
-  const manager = new DesktopProjectManager(paths, resources)
+  let manager = new DesktopProjectManager(paths, resources, requiredBundles)
+  disablePluginsForRecovery = () => manager.disableAllPlugins()
+  let enterpriseIdentity: EnterpriseNativeIdentityBinding | undefined
   // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
   const loginShellRead = new AbortController()
   // The probe runs in its own process group, which outlives Desktop unless the read is aborted.
@@ -338,7 +372,11 @@ async function main(): Promise<void> {
     return result.environment
   })
   let hostEnvironment: NodeJS.ProcessEnv = process.env
-  const prepareHostEnvironment = async (): Promise<void> => { hostEnvironment = await loginShell }
+  const prepareHostEnvironment = async (): Promise<void> => {
+    const environment = await loginShell
+    hostEnvironment = resources.enterpriseServiceOrigin === undefined ? environment
+      : { ...environment, DSH_ENTERPRISE_SERVICE_ORIGIN: resources.enterpriseServiceOrigin }
+  }
   let quitting = false
   let startup: Promise<void> | undefined
   let workspaceRecovery: Promise<void> | undefined
@@ -405,6 +443,7 @@ async function main(): Promise<void> {
   const browserGuests = new DesktopBrowserGuests(() => hostUrl)
   let injections: readonly unknown[] = []
   let welcomeBackend: DesktopWelcomeBackend | undefined
+  let enterpriseWelcomeBackend: EnterpriseWelcomeBackend | undefined
   let reportedLaunch = false
   let analyticsEnabled = false
   const track = async <K extends keyof ProductEventMap>(eventName: K, attributes: ProductEventMap[K]): Promise<void> => {
@@ -442,12 +481,20 @@ async function main(): Promise<void> {
   }
   const platformView = new DesktopPlatformView(join(app.getAppPath(), 'lib', 'preload-platform-account.cjs'),
     () => locale.id === 'zh-CN' ? 'zh_CN' : 'en_US', process.platform === 'win32' ? 'win32' : 'darwin')
+  const keychainSessionStore = new KeychainSessionStore(app.getPath('userData'), safeStorage)
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
-    const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
+    const binding = enterpriseIdentity?.beginHost()
+    const environment = binding === undefined ? hostEnvironment : environmentForEnterpriseSpace(hostEnvironment, binding.space)
+    const host = new DesktopHostProcess(resources.node, resources.dsh, binding?.space.paths.profile ?? paths.profile,
+      hostInspectPort, { ...environment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
       primaryRuntime,
-      resources, (next) => { platformView.setSession(next) })
+      resources, (next) => { if (!enterpriseMode) platformView.setSession(next) },
+      enterpriseMode ? keychainSessionStore : undefined,
+      enterpriseMode ? url => shell.openExternal(url) : undefined,
+      resources.allowedHostPlugins, resources.trustedHostPackages,
+      binding === undefined ? undefined : state => { enterpriseIdentity?.observe(binding.epoch, state) },
+      resources.enterpriseServiceOrigin)
     return {
       start: async () => {
         const ready = await host.start()
@@ -455,6 +502,11 @@ async function main(): Promise<void> {
         hostUrl = ready.url
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections
+        if (enterpriseMode) {
+          enterpriseWelcomeBackend = await connectEnterpriseWelcome(ready.url, (input, init) => net.fetch(input, init))
+          queueMicrotask(() => { host.flushPendingEnterpriseIdentity() })
+          return
+        }
         welcomeBackend = await connectDesktopWelcome(ready.url, (input, init) => net.fetch(input, init), async () => (await session.defaultSession.cookies.get({ url: ready.url })).map(cookie => `${cookie.name}=${cookie.value}`).join('; '))
         analyticsEnabled = await welcomeBackend.analyticsEnabled().catch(() => false)
         if (!reportedLaunch) { reportedLaunch = true; void track('desktop_app_launch', {}) }
@@ -500,6 +552,7 @@ async function main(): Promise<void> {
       stop: async () => {
         analyticsEnabled = false
         stopAccount?.()
+        enterpriseWelcomeBackend = undefined
         try { await host.stop(requireCleanStop) }
         catch (error) {
           if (!requireCleanStop || !(error instanceof DesktopHostUncleanExitError)) throw error
@@ -514,6 +567,51 @@ async function main(): Promise<void> {
     if (state.phase === 'error') reportFatal(state.failure, 'host')
     else if (!shuttingDown) backendReady = state.phase === 'ready'
   })
+
+  if (enterpriseMode) {
+    enterpriseIdentity = new EnterpriseNativeIdentityBinding({
+      userData: app.getPath('userData'),
+      clear: async () => {
+        hostUrl = undefined
+        hostCookie = undefined
+        injections = []
+        navigation = undefined
+        analyticsEnabled = false
+        stopAccount?.()
+        stopAccount = undefined
+        welcomeBackend = undefined
+        enterpriseWelcomeBackend = undefined
+        platformView.setSession(null)
+        const closePrimary = async (): Promise<void> => {
+          const window = mainWindow
+          if (window === undefined || window.isDestroyed()) return
+          const closed = new Promise<void>(resolve => { window.once('closed', resolve) })
+          window.destroy()
+          await closed
+        }
+        const cleanup = await Promise.allSettled([platformView.closeAndWait(), browserGuests.reset(), closePrimary()])
+        const failures = cleanup.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+        if (failures.length) throw new AggregateError(failures, 'Enterprise identity switch could not close old browser state')
+      },
+      stop: () => backend.stop(),
+      prepare: async (space) => {
+        manager = new DesktopProjectManager(space.paths, resources, requiredBundles)
+        await manager.applyRelease()
+      },
+      start: () => backend.start(prepareHostEnvironment),
+      reload: async () => {
+        navigation = undefined
+        if (enterpriseIdentity?.currentSpace.identity === null) {
+          enteredWorkspace = false
+          await showEnterpriseWelcome()
+        } else await enterWorkspace()
+      },
+      getStartup: () => startup,
+      setStartup: value => { startup = value },
+      isClosing: () => quitting || shuttingDown,
+      onFailure: error => { reportFatal(error, 'main') },
+    })
+  }
 
   const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
   const showUpdateFailure = (state: DesktopUpdateState): Promise<void> => {
@@ -565,23 +663,27 @@ async function main(): Promise<void> {
     if (backend.host === undefined || welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
     return welcomeBackend.read()
   }
-  stopForRecovery = () => backend.close()
+  stopForRecovery = () => { enterpriseIdentity?.dispose(); return backend.close() }
 
   const reconcileBackend = (): Promise<void> => {
-    startup ??= (async () => {
-      await navigateMain(applicationUrl)
+    if (startup !== undefined) return startup
+    const pending = (async () => {
+      if (!enterpriseMode) await navigateMain(applicationUrl)
       await backend.start(async () => {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
       })
-      if (backend.host !== undefined) await openInitialWindow()
+      // A restored enterprise identity schedules an employee-space switch that
+      // awaits this startup. Do not open the bootstrap welcome while it is pending.
+      if (backend.host !== undefined && !(enterpriseMode && enterpriseIdentity?.switching)) await openInitialWindow()
       if (backend.host !== undefined) updateJournal?.action('workspace-ready')
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
       updateJournal?.action('workspace-failed')
       reportFatal(error, 'main')
       throw error
-    }).finally(() => { startup = undefined })
-    return startup
+    }).finally(() => { if (startup === pending) startup = undefined })
+    startup = pending
+    return pending
   }
 
   const manifest: unknown = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8'))
@@ -664,7 +766,7 @@ async function main(): Promise<void> {
     window.once('closed', () => { resolve() })
   })
 
-  protocol.handle(SCHEME, (request) => {
+  const applicationProtocol = (request: Request): Promise<Response> => {
     const url = new URL(request.url)
     // Shell-owned documents live in the application bundle and never pass through the Host.
     if (url.hostname === 'shell') return serveWebDocument(request, join(app.getAppPath(), 'renderer'))
@@ -673,13 +775,14 @@ async function main(): Promise<void> {
         || ['/favicon.svg', '/manifest.webmanifest'].includes(url.pathname)) {
         return serveWebDocument(request, join(resources.dsh, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist'))
       }
-      if (backend.host === undefined || hostUrl === undefined || hostCookie === undefined) {
+      if (enterpriseIdentity?.switching || backend.host === undefined || hostUrl === undefined || hostCookie === undefined) {
         return Promise.resolve(new Response(null, { status: 503 }))
       }
       return forwardWebRequest(request, hostUrl, hostCookie)
     }
     return Promise.resolve(new Response(null, { status: 404 }))
-  })
+  }
+  protocol.handle(SCHEME, applicationProtocol)
 
   installDesktopDirectoryPicker(() => mainWindow)
   installMicrophonePermissions(session.defaultSession, () => mainWindow?.webContents)
@@ -688,8 +791,9 @@ async function main(): Promise<void> {
   app.on('will-quit', () => { shortcuts.dispose() })
 
   ipcMain.handle(DESKTOP_IPC.boot, async (event) => {
-    assertDesktopSender(event, ['app'])
+    assertProductSender(event)
     await startup
+    assertProductSender(event)
     if (backend.host === undefined || hostUrl === undefined) throw new Error('Desktop Host is unavailable')
     return { injections, streamBaseUrl: new URL(hostUrl).origin }
   })
@@ -705,6 +809,9 @@ async function main(): Promise<void> {
 
   ipcMain.handle(DESKTOP_IPC.browserAcquire, (event, workspace: unknown) => {
     assertProductSender(event)
+    if (enterpriseMode && (enterpriseIdentity?.switching || hostUrl === undefined || backend.host === undefined)) {
+      throw new Error('desktop browser: enterprise identity is switching')
+    }
     return browserGuests.acquire(event.sender, workspace)
   })
   ipcMain.handle(DESKTOP_IPC.browserRelease, (event, lease: unknown) => {
@@ -712,17 +819,29 @@ async function main(): Promise<void> {
     return browserGuests.release(event.sender, lease)
   })
 
-  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['ws://127.0.0.1/*', 'wss://127.0.0.1/*'] }, (details, callback) => {
-    if (hostUrl === undefined || hostCookie === undefined || details.webContentsId !== mainWindow?.webContents.id) {
-      callback({})
-      return
-    }
-    const target = new URL(hostUrl)
-    const requested = new URL(details.url)
-    if (requested.host !== target.host || requested.protocol !== (target.protocol === 'https:' ? 'wss:' : 'ws:')) { callback({}); return }
-    const headers = Object.fromEntries(Object.entries(details.requestHeaders).map(([name, value]) => [name.toLowerCase(), value]))
-    if (headers.origin !== 'dsh-app://app') { callback({ cancel: true }); return }
-    callback({ requestHeaders: { ...headers, origin: target.origin, cookie: hostCookie, 'sec-fetch-site': 'same-origin' } })
+  const installHostWebSocketHeaders = (browserSession: Session): void => {
+    browserSession.webRequest.onBeforeSendHeaders({ urls: ['ws://127.0.0.1/*', 'wss://127.0.0.1/*'] }, (details, callback) => {
+      if (enterpriseIdentity?.switching) { callback({ cancel: true }); return }
+      if (hostUrl === undefined || hostCookie === undefined || details.webContentsId !== mainWindow?.webContents.id) {
+        callback({})
+        return
+      }
+      const target = new URL(hostUrl)
+      const requested = new URL(details.url)
+      if (requested.host !== target.host || requested.protocol !== (target.protocol === 'https:' ? 'wss:' : 'ws:')) { callback({}); return }
+      const headers = Object.fromEntries(Object.entries(details.requestHeaders).map(([name, value]) => [name.toLowerCase(), value]))
+      if (headers.origin !== 'dsh-app://app') { callback({ cancel: true }); return }
+      callback({ requestHeaders: { ...headers, origin: target.origin, cookie: hostCookie, 'sec-fetch-site': 'same-origin' } })
+    })
+  }
+  installHostWebSocketHeaders(session.defaultSession)
+  const enterpriseBrowserSessions = new EnterpriseBrowserSessions<Session>({
+    factory: path => session.fromPath(path),
+    configure: browserSession => {
+      browserSession.protocol.handle(SCHEME, applicationProtocol)
+      installMicrophonePermissions(browserSession, () => mainWindow?.webContents)
+      installHostWebSocketHeaders(browserSession)
+    },
   })
 
   const assertMainApplication = (event: IpcMainInvokeEvent): BrowserWindow => {
@@ -755,6 +874,9 @@ async function main(): Promise<void> {
       || new URL(event.senderFrame.url).origin !== new URL(applicationUrl).origin) {
       throw new Error('desktop welcome: rejected locale request from an unowned frame')
     }
+    // Enterprise Host has no personal-account welcome backend. Its normal
+    // settings projection may still adopt a stored locale after bootstrap.
+    if (enterpriseMode) return { languages: systemLanguages, preference: null }
     if (welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
     return { languages: systemLanguages, preference: await welcomeBackend.readLocalePreference() }
   })
@@ -932,7 +1054,7 @@ async function main(): Promise<void> {
   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
     : join(process.resourcesPath, 'icon.png')
   app.setAboutPanelOptions({
-    applicationName: 'DeepSeek Harness',
+    applicationName: applicationIdentity.edition === 'enterprise' ? 'DeepSeek Harness Enterprise' : 'DeepSeek Harness',
     applicationVersion: app.getVersion(),
     // The release has no separate build number; omit Electron's bundle version.
     version: '',
@@ -1070,7 +1192,9 @@ async function main(): Promise<void> {
     }
   }
   const createMainWindow = (): BrowserWindow => {
-    const window = createWindow(appPreload, false, true)
+    const browserSession = enterpriseIdentity === undefined ? undefined
+      : enterpriseBrowserSessions.forSpace(enterpriseIdentity.currentSpace)
+    const window = createWindow(appPreload, false, true, browserSession)
     mainWindow = window
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)
@@ -1140,6 +1264,47 @@ async function main(): Promise<void> {
     }
   }
   let openingWelcome: Promise<void> | undefined
+  const showEnterpriseWelcome = (): Promise<void> => {
+    if (quitting || recovery.active) return Promise.resolve()
+    if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) {
+      welcomeWindow.show()
+      welcomeWindow.focus()
+      return Promise.resolve()
+    }
+    openingWelcome ??= (async () => {
+      const operations = enterpriseWelcomeBackend
+      if (operations === undefined) throw new Error('desktop enterprise welcome: backend unavailable')
+      const window = await openEnterpriseWelcomeWindow(locale, {
+        read: () => operations.read(),
+        beginLogin: () => beginEnterpriseLoginAfterStorageReady(keychainSessionStore, () => operations.beginLogin()),
+        beginQrLogin: () => beginEnterpriseLoginAfterStorageReady(keychainSessionStore, () => operations.beginQrLogin()),
+        finishLogin: id => operations.finishLogin(id),
+        onSignedIn: async state => {
+          if (state.status !== 'signed-in') throw new Error('desktop enterprise welcome: identity is signed out')
+          // The Host must first select the employee's isolated native data space.
+          // The identity coordinator owns workspace entry after that transaction.
+          const deadline = Date.now() + 30_000
+          while (!quitting && Date.now() < deadline) {
+            const identity = enterpriseIdentity?.currentSpace.identity
+            if (identity?.companyId === state.companyId && identity.employeeId === state.employeeId
+              && !enterpriseIdentity?.switching) return
+            await new Promise(resolve => { setTimeout(resolve, 50) })
+          }
+          throw new Error('desktop enterprise welcome: employee data space was not selected')
+        },
+      })
+      welcomeWindow = window
+      window.once('closed', () => {
+        if (welcomeWindow === window) welcomeWindow = undefined
+        if (enteredWorkspace || recovery.active || enterpriseIdentity?.switching) return
+        if (process.platform === 'darwin') mainWindow?.destroy()
+        else app.quit()
+      })
+      if (isQuitting() || recovery.active || enteredWorkspace) window.close()
+      else mainWindow?.hide()
+    })().finally(() => { openingWelcome = undefined })
+    return openingWelcome
+  }
   const showWelcome = (): Promise<void> => {
     if (quitting) return Promise.resolve()
     if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) {
@@ -1202,6 +1367,7 @@ async function main(): Promise<void> {
     return openingWelcome
   }
   const openInitialWindow = async (): Promise<void> => {
+    if (enterpriseMode) { await showEnterpriseWelcome(); return }
     if (quitting || recovery.active) return
     const state = await readWelcomeState()
     if (isQuitting() || backend.state.phase !== 'ready') return
@@ -1217,12 +1383,13 @@ async function main(): Promise<void> {
     }
   }
   focusPrimaryWindow = () => {
-    if (quitting) return
+    if (quitting || enterpriseIdentity?.switching) return
     if (isMandatory()) { mandatoryUI?.focus(); return }
     const window = welcomeWindow ?? mainWindow
     if (window === undefined || window.isDestroyed()) {
       try { createMainWindow() } catch (error) { reportFatal(error, 'main'); return }
-      void (backend.state.phase === 'ready' ? openInitialWindow() : navigateMain(applicationUrl)).catch((error: unknown) => { reportFatal(error, 'main') })
+      void (backend.state.phase === 'ready' ? openInitialWindow()
+        : enterpriseMode ? Promise.resolve() : navigateMain(applicationUrl)).catch((error: unknown) => { reportFatal(error, 'main') })
       return
     }
     // Startup and sign-out select the visible window before activation may reveal the workspace.
@@ -1232,22 +1399,26 @@ async function main(): Promise<void> {
     window.focus()
   }
 
-  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('dsh')
+  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') {
+    app.setAsDefaultProtocolClient(applicationIdentity.externalScheme)
+  }
   app.on('open-url', (event, url) => {
     event.preventDefault()
-    if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
+    if (url === `${applicationIdentity.externalScheme}://open`
+      || url === `${applicationIdentity.externalScheme}://open/`) focusPrimaryWindow()
   })
 
   app.on('activate', (_event, hasVisibleWindows) => {
     if (!hasVisibleWindows) focusPrimaryWindow()
   })
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    if (process.platform !== 'darwin' && !enterpriseIdentity?.switching) app.quit()
   })
   if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
   const finishQuit = (): void => {
     quitting = true
     shuttingDown = true
+    enterpriseIdentity?.dispose()
     updateJournal?.action('quit-requested')
     quitConfirmation.dispose()
     backgroundNotice?.dispose()
@@ -1283,7 +1454,10 @@ async function main(): Promise<void> {
       if (quitting || shellInstallerOwnsQuit) return
       if (approved) { finishQuit(); return }
       // A quit that started from closing the welcome window destroyed it; a cancelled quit needs it back.
-      if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
+      if (!enteredWorkspace && !recovery.active) {
+        const restoreWelcome = enterpriseMode ? showEnterpriseWelcome : showWelcome
+        void restoreWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
+      }
     }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })
   })
 
@@ -1340,9 +1514,42 @@ async function main(): Promise<void> {
   publishUpdate(updateState)
 }
 
-const ownsDesktopInstance = claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })
+/** Verify the ASAR edition and signed runtime before any Electron-owned writable path or lock. */
+function prepareApplicationIdentity(): DesktopApplicationIdentity {
+  if (!app.isPackaged) return resolveDesktopApplicationIdentity(false, undefined, undefined, '')
+  const appPath = app.getAppPath()
+  const manifest: unknown = JSON.parse(readFileSync(join(appPath, 'package.json'), 'utf8'))
+  const runtime = readDesktopRuntime(join(appPath, 'dsh'))
+  const identity = resolveDesktopApplicationIdentity(true, manifest, runtime, app.getPath('appData'))
+  if (identity.edition === 'enterprise') {
+    mkdirSync(identity.userData, { recursive: true })
+    mkdirSync(identity.sessionData, { recursive: true })
+    mkdirSync(identity.bootstrapHome, { recursive: true })
+    app.setPath('userData', identity.userData)
+    app.setPath('sessionData', identity.sessionData)
+    process.env.DSH_HOME = identity.bootstrapHome
+    process.env.DSH_ENTERPRISE_SERVICE_ORIGIN = runtime.enterpriseServiceOrigin
+  }
+  return identity
+}
 
-if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unknown) => {
+let applicationIdentity: DesktopApplicationIdentity | undefined
+try {
+  applicationIdentity = prepareApplicationIdentity()
+  // Resolve logs only after enterprise storage has been selected.
+  if (applicationIdentity.edition === 'enterprise') {
+    const logs = join(applicationIdentity.userData, 'logs')
+    mkdirSync(logs, { recursive: true })
+    app.setAppLogsPath(logs)
+  } else app.setAppLogsPath()
+} catch (error) {
+  console.error(error)
+  app.exit(1)
+}
+const ownsDesktopInstance = applicationIdentity === undefined ? false
+  : claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })
+
+if (ownsDesktopInstance && applicationIdentity !== undefined) void app.whenReady().then(() => main(applicationIdentity)).catch(async (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
   console.error(error)
   const diagnosticFile = process.env.DSH_DESKTOP_DIAGNOSTIC_FILE

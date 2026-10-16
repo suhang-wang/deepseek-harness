@@ -42,6 +42,30 @@ describe('Desktop local packaging configuration', () => {
     expect(parent.DSH_DESKTOP_APP_ID).toBe('com.example.release')
   })
 
+  it('gives unsigned enterprise builds an isolated provisional app ID and rejects it for signed release', () => {
+    const local = localMacOSPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.release' }, 'enterprise')
+    expect(local).toMatchObject({ DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local', DSH_DESKTOP_ENTERPRISE_MODE: '1' })
+    expect(() => validateDesktopPackageEnvironment(local, MACOS, { unsigned: true })).not.toThrow()
+    expect(() => validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_UNSIGNED: '0' }, MACOS)).toThrow(/enterprise app ID/u)
+    expect(() => validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, MACOS, { unsigned: true }))
+      .toThrow(/enterprise app ID/u)
+    expect(() => validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_APP_ID: 'org.example.harness' }, MACOS, { unsigned: true }))
+      .toThrow(/custom enterprise app ID requires/u)
+  })
+
+  it('requires an explicit publisher-owned identifier and signing inputs for signed enterprise macOS', () => {
+    const signed = { ...RELEASE, ...MAC_IDENTITY, DSH_DESKTOP_ENTERPRISE_MODE: '1' }
+    expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, MACOS))
+      .toThrow(/enterprise app ID/u)
+    expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness' }, MACOS))
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
+    expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }, MACOS))
+      .toThrow(/macOS packaging requires/u)
+  })
+
   it('takes cache concurrency from the Windows file and defaults to four without ambient overrides', async () => {
     await withDirectory(async (directory) => {
       const parent = { DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY: '8' }

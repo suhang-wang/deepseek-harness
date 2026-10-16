@@ -1,7 +1,9 @@
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 !define INSTALLER_SOURCE_DIR "${__FILEDIR__}\..\installer"
-!define /ifndef INSTALLER_BUILD_DIR "${__FILEDIR__}\..\.desktop-build\targets\win-x64\installer-ui"
+!ifndef INSTALLER_BUILD_DIR
+  !define INSTALLER_BUILD_DIR "${__FILEDIR__}\..\.desktop-build\targets\win-x64\installer-ui"
+!endif
 
 ManifestDPIAware true
 !ifndef BUILD_UNINSTALLER

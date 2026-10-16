@@ -20,6 +20,15 @@ export class DesktopBrowserGuests {
   /** @param hostUrl - current authenticated DSH Host, which guests cannot request. */
   constructor(private readonly hostUrl: () => string | undefined) {}
 
+  /** Drain current guests and discard workspace partition mappings before an employee switch. */
+  async reset(): Promise<void> {
+    const leases = [...this.leases]
+    this.partitions.clear()
+    const results = await Promise.allSettled(leases.map(([id, lease]) => this.release(lease.owner, id)))
+    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (failures.length) throw new AggregateError(failures, 'desktop browser: old employee guests could not close')
+  }
+
   /**
    * Reserve one guest in a workspace's process-lifetime partition.
    * @param owner - authenticated primary application WebContents.

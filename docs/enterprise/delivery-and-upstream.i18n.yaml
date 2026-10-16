@@ -1,0 +1,34 @@
+# Bilingual-pair consistency record for delivery-and-upstream.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/enterprise/delivery-and-upstream.md
+/:
+  en: d5b8dbbc327bd479
+  zh: 6ee40ca674fac06c
+/enterprise-delivery-and-upstream-updates:
+  en: 72a90d55e4306210
+  zh: 36056e19bdd9ccaa
+/enterprise-delivery-and-upstream-updates/summary:
+  en: 798aa6b5151c06d1
+  zh: cab9286e5e9ac4b5
+/enterprise-delivery-and-upstream-updates/table-of-contents:
+  en: 52d19821edf9d94a
+  zh: a6326cfa8c3194c0
+/enterprise-delivery-and-upstream-updates/repository-and-branch-ownership:
+  en: 59d2f94e54bdc828
+  zh: 07b67a4b995911d0
+/enterprise-delivery-and-upstream-updates/implementation-phases:
+  en: cd2fd22de221232c
+  zh: 2ef95559423f1937
+/enterprise-delivery-and-upstream-updates/upstream-integration:
+  en: c9bc220de4c0fcd5
+  zh: 0773bce4451a6906
+/enterprise-delivery-and-upstream-updates/release-and-recovery:
+  en: bae5c4aeac4c87e8
+  zh: 7c6b1cacd8e0c406
+/enterprise-delivery-and-upstream-updates/deployment-inputs:
+  en: e375cba3684e9d66
+  zh: d7261efc12c4d75f
+/enterprise-delivery-and-upstream-updates/dev-note:
+  en: 304ef76e8b0a4fc9
+  zh: 84b8c4549c132966

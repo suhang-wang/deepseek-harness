@@ -1,0 +1,214 @@
+---
+description: "Component, protocol, consistency, authorization, quota, and storage rules for the enterprise DeepSeek integration."
+document-type: reference
+status: design
+---
+
+# Enterprise technical design
+
+English | [中文](technical-design.zh.md)
+
+<a id="summary"></a>
+## Summary
+
+Use one independent enterprise service with desktop integration plugins and a small native distribution patch set. This reference specifies the proposed first-release behavior under the [design status](README.md); endpoint and table names below are planned interfaces.
+
+<a id="contents"></a>
+## Table of Contents
+
+- [Components and trust](#components)
+- [Desktop authentication](#authentication)
+- [Organization synchronization](#organization)
+- [Policy resolution](#policies)
+- [Messages and Files gateway](#gateway)
+- [Quota ledger](#quota)
+- [Data and APIs](#data-api)
+- [Security and operations](#operations)
+
+<a id="components"></a>
+## Components and trust
+
+```mermaid
+flowchart LR
+  D[Enterprise desktop] --> H[Local Host plugins]
+  H --> S[Enterprise service]
+  A[Administrator browser] --> S
+  S <--> W[WeCom identity and directory]
+  S --> M[DeepSeek Messages and Files]
+  S <--> P[(PostgreSQL)]
+  S --> K[Server secret storage]
+```
+
+| Component | Responsibility | Deployment |
+| --- | --- | --- |
+| Enterprise backend | Identity, organization jobs, policies, model proxy, ledger, and audit. | Company server, one TypeScript/Node.js service. |
+| Admin website | Organization, access, policy, quota, and operational views. | React/Vite assets served at the backend origin. |
+| Desktop identity plugin | Browser login transaction, refresh, signout, and Host-only credentials. | Employee local Host. |
+| Desktop provider/UI plugins | Approved catalog, managed settings, and existing DeepSeek adapter wiring. | Local Host and Client faces. |
+| Enterprise bundle and native patches | Composition, welcome UI, app identity, data isolation, and updates. | Enterprise desktop distribution. |
+
+**Host plugin trust boundary:** Desktop Host plugins run in one Node process. The private process IPC channel is private from the renderer, but it does not isolate plugins from one another; any code loaded into that Host can issue identity storage and browser requests. The enterprise bundle declares approved Host entry packages as `dsh.enterprise.allowedHostPluginNames` in its release-owned package metadata. Desktop packaging binds each entry to its exact version and package path and seals the complete signed runtime package catalog into the runtime descriptor. The native launcher passes frozen copies through the Host process to `runProfile`; preflight checks composed rows, groups, and static Includes before activation, then recursively verifies declared dependencies, optional dependencies when present, and peer dependencies against that signed catalog. Unknown package code, same-name path/version substitutions, dependencies outside the catalog, and Includes that cannot be inspected are disabled. The policy still requires approval and real Loader composition evidence before release. The dependency check covers declared package metadata; it is not an OS sandbox for arbitrary dynamic loading. If the profile cannot enforce the policy, credentials must move behind a separately isolated broker.
+
+The proposed server stack is TypeScript, a maintained Node.js LTS release, Fastify, PostgreSQL, and schema-validated HTTP interfaces. PostgreSQL owns transactions, synchronization staging, job leases, and the quota ledger. Pin exact supported dependency versions at implementation; validate their APIs before writing integration code.
+
+Reuse [registerDeepSeekProvider](../../packages/llm/llm-deepseek/src/host.ts) for transport and discovery. The existing [connection admission](../../packages/client/connection/src/rpc-host.ts) uses one operator identity; the company service implements its own employee and administrator authorization. The first release runs no employee agent tasks on the central server.
+
+Corporate credentials, quota, and authorization are server authorities for the `deepseek-enterprise` route. Desktop configuration and version headers are untrusted inputs. Employee-owned routes use local credentials and remain outside corporate gateway accounting and revocation. Minimum-version checks support compatibility, but do not attest that an unmanaged device runs unmodified software.
+
+<a id="authentication"></a>
+## Desktop authentication
+
+Use an embedded WeCom QR login page or the system browser with the company registered HTTPS callback. WeCom authenticates the employee; the company backend issues its own device session. The desktop handoff proof below is owned by this system and does not depend on WeCom implementing OIDC or PKCE.
+
+For browser login, use the [WeCom Web login](https://developer.work.weixin.qq.com/document/path/98152) CorpApp endpoint `https://login.work.weixin.qq.com/wwlogin/sso/login` with the configured app, callback and state. The QR view uses WeCom's `https://open.work.weixin.qq.com/wwopen/sso/qrConnect` with the same four validated parameters and `self_redirect=true`, isolated in a sandboxed frame; the Host retains the verifier and polls the same attempt every 2.5 seconds. The callback accepts WeCom's optional `appid` only when it equals the configured company ID. If the QR page instead tries to navigate the top frame to the HTTPS callback, the native window blocks that navigation and forwards only a callback matching the current attempt's registered origin, path, state and app ID; the local welcome page remains open to observe completion. Exchange the code through [auth/getuserinfo](https://developer.work.weixin.qq.com/document/path/98176) and read `userid`; identity success alone does not establish application visibility, so the active authorized organization snapshot must still admit that employee.
+
+```mermaid
+sequenceDiagram
+  participant D as Desktop Host
+  participant S as Enterprise service
+  participant B as QR frame or system browser
+  participant W as WeCom
+  D->>D: Generate random verifier
+  D->>S: Create attempt with S256 challenge
+  S-->>D: Attempt ID and browser URL
+  D->>B: Show WeCom QR or open browser URL
+  B->>W: WeCom authorization
+  W->>S: HTTPS callback with code and state
+  S->>W: Exchange code and verify identity
+  S->>S: Check organization and access
+  D->>S: Exchange attempt ID and verifier
+  S-->>D: One device session
+  B-->>B: Show completion without tokens
+```
+
+- Generate at least 256 bits of verifier entropy on the Host. Store its S256 challenge with an unpredictable attempt ID, hashed state, creation time, and configured company/application. Accept only registered browser/callback destinations.
+- An attempt expires after five minutes. Callback state validation and code exchange must be single-owner operations. Duplicate callbacks cannot change the approved identity. Cancelled, expired, denied, and consumed attempts cannot mint sessions.
+- Verify the resulting company and user identity, application authorization, active directory snapshot, and employee status on the server. Identity is keyed by company plus WeCom UserID; email and phone never merge accounts.
+- Include the verified company ID and employee ID in every successful desktop redemption and refresh response so the Host can publish identity status and bind its runtime space; keep all token fields inside the Host.
+- The Host polls or exchanges with the verifier in an HTTPS request body. Pending attempts return 202; an approved attempt has a 60-second redemption window and is atomically consumed once. Tokens never appear in callback URLs. Retain a consumed attempt challenge for a ten-minute cleanup window: a verifier-protected cleanup operation can revoke only the session created by that attempt, cannot mint or recover tokens, and is rate-limited. A lost token response uses this cleanup before a fresh login.
+- Access tokens last five minutes; refresh sessions have a seven-day absolute lifetime. Store refresh-token hashes server-side, rotate on refresh, and revoke the device session on confirmed reuse. Serialize refresh on the Host to prevent legitimate parallel calls from reusing a rotated token. Restore from OS-backed encrypted storage only when the stored session pair matches the trusted company and employee returned by the backend.
+- Keep refresh credentials in macOS Keychain-backed storage or, for the Windows x64 development package, Windows DPAPI-backed Electron safeStorage; keep access tokens in Host memory. Windows DPAPI isolates users, but not other processes under the same Windows account, so release qualification must review the Host plugin allowlist and same-user threat model. Issue a separate 256-bit logout-only capability per device session; the server stores its hash and it can revoke only that session, never refresh or infer. The renderer receives only identity/status. Offline logout clears active credentials and retains only this encrypted capability in a durable revocation queue; reconnect or app restart retries it idempotently, then deletes it. Display pending revocation until confirmed or the server session expires.
+
+Administrator browser login uses a separate server session in a Secure, HttpOnly, SameSite=Strict cookie. The WeCom callback verifies the employee against the active authorized organization snapshot before role lookup; a non-administrator receives no admin session. After issuing an administrator or first-owner setup cookie, the callback returns a no-store page on the registered origin that navigates to the administration page. This ends the cross-site WeCom redirect chain before the browser needs to send the Strict cookie. The page contains no code, token, state, or user data and offers a same-origin link if automatic navigation is unavailable. Protect state-changing admin requests with CSRF checks, origin validation and rate limits, and recheck active employment and the current grant on every admin request.
+
+An explicit server command generates a cryptographically random, ten-minute, one-use initialization code for a specified active in-scope WeCom UserID and prints it once; replacing the code invalidates the earlier one. Store only its digest, expiry, bound identity, and persistent attempt counter. Before the company has ever been initialized, a successful WeCom scan for that identity yields a short-lived pending setup session, not an admin session. The code submission transaction locks the one-company initialization record, verifies identity, expiry and attempt limit, consumes the code, creates the first owner grant, and records an audit event; concurrent submissions cannot create another owner. Initialization remains closed even if all owner grants are later lost.
+
+Owners can grant, change or revoke owner and administrator roles by stable company/UserID with an expected grant revision. Prevent removal or demotion of the last active owner, revoke affected admin sessions immediately after a grant change, and audit actor, target, prior/new role and outcome without recording codes. Administrators may manage organization, model policies, quotas and reports; only owners manage grants and provider credentials. Recovery after loss of all owners requires a separate operator command with an explicit reason and audit event, never an automatic return to the initialization flow. Import of legacy `ADMIN_BOOTSTRAP_USER_IDS` is an explicit reviewed operator step and does not silently grant access.
+
+Partition local conversation storage, credential references, and upload caches by the verified company/employee identity inside the enterprise application data root. The native launcher derives each employee space from the trusted company ID and employee ID, sets `DSH_HOME` to that space, and starts Host with `DSH_ENTERPRISE_IDENTITY_SPACE` bound to the same identity. The bootstrap space has no identity and cannot return model access tokens.
+
+Separate single-company deployments can use one source tree and a non-secret company packaging profile for each client. The profile fixes the service HTTPS origin, reverse-DNS app ID, product name, and external app-open URL scheme before packaging. The app ID selects the Electron data root; the installer registers that profile's external scheme and the packaged manifest supplies the same value to the launcher. Distinct IDs, names, and schemes allow the clients to coexist without sharing credentials or app-open registration. A custom app ID also namespaces the update feed beneath `dsh-enterprise/<appId>/`, preserving the legacy feed path for the provisional client. WeCom's HTTPS authorization callback remains specific to each backend, independent of this app-open scheme. WeCom secrets, provider keys, signing inputs, and update policy remain deployment-specific server or protected build settings, not profile fields. The adjacent enterprise repository owns the [company configuration procedure](../../../deepseek-harness-enterprise/docs/company-configuration.md), which prepares the public server settings, protected-file references and desktop profile for each independent deployment.
+
+Identity changes run as one native transaction: clear old forwarding and transient state, stop the old Host, prepare the target profile, start Host, then reload the shell. Host events carry the current Host epoch; events from a stopped epoch are discarded, and the admission fence rejects traffic until the target identity is ready. The coordinator does not roll back to the old Host after a failed start, so retry starts from a clean transaction owner.
+
+The main renderer uses `session.fromPath(join(space.home, 'browser-session'))` for the active employee. Switching identity destroys the old window and constructs a new window with the target Session; localStorage drafts and browser state are therefore scoped by employee space. Returning from A to B and back to A reopens A's own stored state, while guest partitions reset on switch and are not reused across employees.
+
+Identity changes close the current Host and start a separate employee profile/home; never submit an earlier employee history under the new identity. This is application-level separation, not protection from an OS account owner reading files directly.
+
+<a id="organization"></a>
+## Organization synchronization
+
+Read only the self-built application authorized directory, including departments, parent relationships, employees, and multiple memberships. Name, avatar, manager, phone, and email fields depend on actual permissions; sync must work without optional personal fields. A direct-manager tree is not assumed from the department tree.
+
+- Create a sync epoch and staging rows. Fetch all authorized roots, departments, member pages, and relations with bounded retries and rate limits. A company-level database lease prevents overlapping publication.
+- Validate tree acyclicity, parent references, membership references, pagination completion, expected roots, scope identity, and count changes. A reduction exceeding 20 percent, an unexplained authorization change, or an unverifiable scope requires administrator confirmation.
+- Publish only a complete validated authorized snapshot by switching the active epoch in one transaction. Partial, failed, expired-lease, or interrupted jobs leave the last valid snapshot unchanged and do not delete absent employees.
+- Confirmed absent or disabled employees lose access during publication. Manual disablement persists across sync and always wins over directory reactivation. Unconfirmed scope reduction freezes the affected access until reviewed; it is not silently interpreted as employee departure.
+- Run full authorized-scope synchronization every 15 minutes, with a manual trigger and a login-time membership check where supported. Access requires a valid snapshot no older than 60 minutes. Initial access remains closed until the first snapshot publishes.
+- Treat directory callbacks as an optional later optimization after verifying the actual app permissions. Validate signature/decryption, deduplicate, and request resync; polling remains the first-release source of completeness.
+
+Each employee needs one server-owned cost department that is a current membership. Use an approved main-department field only when its availability is verified; otherwise the administrator assigns it. A missing or departed cost department blocks inference until corrected. Charge completed requests to the cost-department snapshot captured at admission.
+
+<a id="policies"></a>
+## Policy resolution
+
+Resolve the effective catalog as the intersection of the company allowlist, every explicit restriction on the employee membership departments and their ancestors, and an explicit employee restriction. Omitted restrictions inherit; an empty allowlist denies all. Any applicable disablement wins. Personal preferences never expand access.
+
+Choose the default from the employee preference, cost-department default, company default, and company-ordered fallback list, accepting the first permitted entry. If none is permitted, block inference with the explanation. Reject a submitted disallowed model rather than substituting another one.
+
+Resolve output and reasoning limits using the most restrictive applicable cap. Policy writes require the expected revision; stale writes return 409. Admission reads the authoritative active policy and employee state inside the budget transaction and records their revisions. Cached desktop policy controls presentation only.
+
+New requests fail immediately after a committed revocation or deny change. Recheck active-stream revocation at most every five seconds and abort affected upstream calls. Broader settings edits apply to the next request; the in-flight request retains its admitted model, token cap, budget period, and price revision.
+
+<a id="gateway"></a>
+## Messages and Files gateway
+
+The current [adapter](../../packages/llm/llm-deepseek/src/adapter.ts) posts to the Messages root, not a generic model gateway. Set the enterprise provider base URL to a company-owned HTTPS root ending in `/inference/deepseek/v1`; the existing [root resolver](../../packages/llm/llm-deepseek/src/messages-api.ts) then appends resource names without a second `/v1`.
+
+| Route | Behavior |
+| --- | --- |
+| `POST /inference/deepseek/v1/messages` | Authenticate employee, validate model/body/file ownership, reserve quota, and relay the Messages stream. |
+| `POST /inference/deepseek/v1/files` | Authenticate, enforce upload/media/expiry limits, and persist employee ownership before returning a usable file ID. |
+| `GET /inference/deepseek/v1/files` | Return only the caller owned files with ownership-filtered pagination. |
+| `GET` / `DELETE /inference/deepseek/v1/files/{id}` | Check employee ownership; return 404 for foreign/unknown IDs and forward only authorized operations. |
+| `POST /inference/compatible/v1/chat/completions` | Authenticate employee, resolve the published compatible provider/model, reserve output quota, and relay qualified Chat Completions SSE. |
+| `GET /api/enterprise/v1/me/compatible-models` | Return only compatible models published and permitted for the current device session; never return provider credentials. |
+
+Use employee Bearer credentials only between Host and enterprise service. Strip incoming upstream-auth and identity headers, derive employee identity from the session, and inject the server DeepSeek credential toward the configured official origin. Allow only qualified Messages/Files paths, methods, beta/version headers, and body fields; prohibit arbitrary URLs, redirects, and unsupported resources.
+
+The DeepSeek provider catalog allows only models with recorded real Messages/Files and output-bound qualification; its initial approved model is `deepseek-flash`. The compatible catalog requires its own Chat Completions and output-usage qualification. An admin policy cannot create an unqualified model ID. The native Models page also mounts user-configurable provider adapters. Their local settings and credentials never configure the `deepseek-enterprise` route, which has no writable settings namespace; its read-only group lists only the current employee-visible model names and has no editor or company key field. Company policy and quota detail stay in the administration workspace. Company and personal routes remain distinct in the picker. Owners replace the upstream API key through a write-only admin request: encrypt each immutable key version with a separate master key read from a protected server file, return only configured state and version metadata, and never emit plaintext in reads, logs or audit. Admission pins a key version for each new company call, so rotation does not change a dispatched call. Files persist their creation key version; retain old encrypted versions until owned files and cleanup work no longer need them, then retire them through an audited operation. With no configured key, admin access remains available and company inference fails before dispatch with a clear unavailable response.
+
+The admin Models & Policy view presents the qualified provider as a card with enabled model names, credential status, and an inline model editor. It also accepts OpenAI-compatible provider drafts with a validated public HTTPS base URL, explicit model IDs and a write-only, encrypted key. Drafts use separate provider and key-version records, role-checked revision writes and audit events; their model names appear on the saved card. An owner publishes only a reviewed qualification bound to the exact provider revision, endpoint, model list, and key version. A changed binding returns the provider to pending; employee catalog and inference never read unqualified drafts. Policy editing is a separate, scope-bound card with form and JSON modes sharing one draft; form edits preserve fields it does not expose. The current scope path and revision must match the loaded record before a write, and a conflict leaves the draft intact. Preview values render as text nodes; raw constraint records stay in a disclosure. The browser never interpolates provider responses into HTML or receives a plaintext key.
+
+The first compatible qualification is `qwen3.8-omni-flash` at `https://llm-8w9jc1k1ro7fi2ml.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`. The gateway fixes this HTTPS destination and model ID, rejects redirects and private network resolution, and pins the checked public address through TLS. It accepts text and tool-call Chat Completions only, sets `stream=true` and `stream_options.include_usage=true`, and bounds `max_tokens` to the 4,096-token enterprise cap. Pilot requests are limited to 8 KiB of JSON, five minutes total duration, 30 requests per employee and 200 per company per rolling 24 hours, plus output-token quota. Image, audio, video, arbitrary endpoints, and unqualified model IDs are rejected. The server, not the employee client, injects the encrypted provider key after device authentication and policy/quota admission. A bounded parser accepts one terminal usage event with nonnegative integer `completion_tokens`, followed by `[DONE]`; missing, duplicated, malformed, or over-reservation usage leaves the dispatched reservation uncertain. The upstream `stop` finish reason does not imply absence of streamed `delta.tool_calls`. The compatible route currently estimates output cost only in the management report; input charges require invoice reconciliation. The separate ENT-050 qualification record in the enterprise repository contains observed provider behavior, not desktop or deployment acceptance.
+
+Relay Messages SSE incrementally with backpressure and cancellation. Preserve text, thinking/signatures, tool blocks, tool changes, stop reasons, and usage. A bounded side parser reads raw `message_start` and `message_delta` usage and terminal `message_stop`; cumulative output usage replaces prior cumulative values. Settle only if an actual final output count is present, is a nonnegative integer, never decreases, stays within the reservation, and accompanies a qualified terminal sequence. Missing/malformed output or a fallback zero from the adapter is not trusted usage. Protocol violations stay uncertain; an output-bound violation disables the affected model pending review.
+
+Before stream headers, return structured protocol-compatible 400/401/403/409/413/429/502/503 failures. After headers, relay a valid protocol error where possible and terminate the stream; never append an unrelated admin JSON envelope. The gateway performs no automatic replay after dispatch; retries by Harness are separate budgeted attempts and may incur separate upstream charges.
+
+Every `file_id` in Messages must belong to the authenticated employee, including references in historical messages. Shared upstream credentials never authorize cross-employee list/retrieve/delete. Filename prefixes are not proof of ownership; this matters because the current [file store](../../packages/llm/llm-deepseek/src/file-store.ts) can reclaim uploaded files. Unknown post-upload outcomes enter cleanup reconciliation without exposing orphaned files.
+
+The current local upload cache is scoped by endpoint and authentication headers. Token refresh can create a different cache scope; first-release behavior allows safe reupload and server expiry cleanup. It does not promise cache reuse across employee sessions or token rotation.
+
+<a id="quota"></a>
+## Quota ledger
+
+Use integer output-token units for hard quotas. Require configured finite company, employee, and cost-department/ancestor limits for each calendar month in the company timezone. Create period buckets atomically from approved quota configuration on first admission. The request freezes its period and cost department. Reject a limit reduction below settled usage plus active reservations with 409 under the same budget locks. Input tokens and estimated money are reporting fields, not hard monetary enforcement.
+
+- In one database transaction, lock relevant employee/policy and budget rows in deterministic order, check active sessions and directory freshness, check the two-call concurrency limit, and reserve the enforced maximum output. Available quota equals limit minus settled usage minus active reservations.
+- The actual upstream protocol/model must enforce the reserved output bound, including reasoning. If qualification cannot establish that bound, do not enable that model/capability. Do not shrink a request silently; the client must submit within the advertised cap.
+- Persist request states `reserved`, `dispatched`, `settled`, and `uncertain`. Mark dispatched durably before initiating network delivery. Release immediately only when dispatch is provably absent; a crash in the delivery window is uncertain.
+- On trusted terminal usage meeting the gateway validation above, settle once by unique request ID, debit actual output, and release the difference. Do not use the local adapter default usage as accounting evidence. Capture qualified input/cache/output statistics and the price revision separately; missing input/cache data makes the corresponding cost unavailable or explicitly estimated. Missing terminal output, cancellation, disconnection, or service crash cannot establish zero charge.
+- Keep uncertain reservations visible. At 24 hours, a reconciliation job converts the reserved amount to an explicitly estimated debit; trusted later evidence can produce one audited adjustment. Expiry alone never silently refunds dispatched work.
+- Use a server request ID for each attempt. An optional client idempotency key is bound to employee and body digest; different content returns 409. A repeated dispatched attempt returns its status, not a new model execution or an invented stream resume.
+
+Start with a ten-minute total inference deadline, model-qualified output caps, bounded request size, and bounded file expiry. Worker leases and uniqueness constraints recover reservations after process loss. A price revision is immutable for an admitted request; absent price data leaves cost explicitly unavailable rather than zero.
+
+<a id="data-api"></a>
+## Data and APIs
+
+| Data owner | Planned records and invariants |
+| --- | --- |
+| Identity | `companies`, `employees`, `device_sessions`, `login_attempts`, `admin_grants`, `admin_bootstrap`; unique company/UserID, hashed refresh credentials, manual disable state, persistent initialization and versioned grants. |
+| Organization | `departments`, `memberships`, `sync_runs`, `organization_epochs`; staged snapshots and one active epoch. |
+| Policy | `policy_revisions`, `model_catalog`, `cost_assignments`, `provider_key_versions`; optimistic concurrency, qualified model IDs, validated defaults/caps, and encrypted credential versions. |
+| Quota and inference | `budget_buckets`, `inference_requests`, `usage_ledger`, `price_revisions`; unique settlement/adjustment and request snapshots. |
+| Files and operations | `upstream_files`, `job_leases`, `audit_events`; employee ownership, cleanup state, privileged audit. |
+
+| API group | Planned interface and access |
+| --- | --- |
+| Desktop auth | `POST /api/enterprise/v1/auth/desktop/attempts`; verifier-protected status/exchange/cancel and consumed-attempt cleanup; rate-limited public entry. |
+| Sessions | `POST /api/enterprise/v1/auth/refresh`, `/auth/logout`, `/auth/revoke-device`; normal revocation uses the session, offline retries use a logout-only capability. |
+| Employee data | `GET /api/enterprise/v1/me`, `/me/organization`, `/me/policy`, `/me/usage`, `/capabilities`; device-session identity is derived server-side. The organization snapshot retains the optional WeCom member name; the organization endpoint returns only that employee's ID, optional name, optional visible root company name, department paths and cost department. Missing names fall back to stable IDs in the client; policy/usage return effective models and own quota. |
+| Administration | `/api/enterprise/v1/admin/organization`, `/employees`, `/policies`, `/budgets`, `/usage`, `/audit`, `/grants`, `/provider`; current administrator grant required, owner role for grant and credential writes, expected revision for grant updates. |
+| Admin setup | WeCom browser callback creates a pending setup session only before initialization; a same-origin, CSRF-protected one-use code submission grants the first owner atomically. |
+| Sync jobs | `POST /api/enterprise/v1/admin/sync-runs` returns 202 and a job ID; status is separate from success. |
+
+Non-inference JSON uses `{ success, data, error, requestId }`, with structured `error.code`, safe message, and pagination where relevant. API v1 additions are backward compatible; incompatible changes require a new major version and a defined overlap window. Inference retains its upstream-compatible wire format.
+
+<a id="operations"></a>
+## Security and operations
+
+- Validate HTTP, durable data, deployment configuration, and upstream responses. Enforce HTTPS, method/path allowlists, upload limits, admin CSRF, rate limits, and parameterized SQL. Redact credentials and model content from logs, traces, and errors.
+- Disable official session-log contribution and optional product analytics in the enterprise composition. The backend rejects or strips `dsh_session_log` and unapproved metadata. Required inference context still reaches DeepSeek; local tools remain governed by Harness permissions.
+- Keep full conversations local by default. Store operational/accounting metadata centrally; export security changes to an independently retained audit/recovery record. File bytes stream to the approved upstream and expire there. Retention and deletion requirements are deployment inputs, not implicit provider guarantees.
+- Employee-owned providers can send prompts, tool context and attachments directly to employee-selected endpoints. They use local credentials and billing, bypass company quotas and company model revocation. The Models page presents the company route as a noneditable group of current employee-visible model names alongside editable employee providers. The Enterprise Account page renders company and employee organization information only.
+- Migration explicitly imports and reviews legacy static administrator UserIDs and the existing `DEEPSEEK_API_KEY` before switching to database grants and encrypted key versions. The static allowlist remains a temporary compatibility source only until that explicit cutover; afterward database grants are the sole admin authority and no environment variable grants access. Remove legacy dependencies only after verification. On backup restore, invalidate pre-restore authentication, recheck grants and organization, and reconcile key-version/file references and the usage ledger before reopening inference.
+- Expose liveness/readiness, directory age, pending/failed jobs, revocation lag, relay latency, upstream failures, and uncertain ledger totals. Database or authoritative-policy failure refuses new admissions; local chat history remains accessible.
+
+<a id="dev-note"></a>
+## Dev Note
+
+Real credentials must qualify Messages beta headers, Files response schema and expiry, model output bounds, and usage semantics. Chat Completions support requires a separate scope decision and cannot replace these qualification cases. [Delivery](delivery-and-upstream.md) owns deployment and recovery choices.
+
+Before a public callback domain exists, an explicit local simulation process may use HTTP only on canonical `127.0.0.1` with a temporary database and synthetic company/employees. It must not read real credentials or call live WeCom/models, must use distinct development cookie names with state/origin/CSRF checks, and must not modify OS trust or bypass TLS validation. Production entrypoints retain HTTPS and `__Host-*; Secure` cookies; this simulation is not live qualification.

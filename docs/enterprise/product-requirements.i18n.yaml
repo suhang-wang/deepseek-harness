@@ -1,0 +1,34 @@
+# Bilingual-pair consistency record for product-requirements.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/enterprise/product-requirements.md
+/:
+  en: afe223d2d63bd4ec
+  zh: d5f1a9162f2fe22f
+/enterprise-product-requirements:
+  en: 340b4f3c539a40e7
+  zh: 881125d3c9efbeda
+/enterprise-product-requirements/summary:
+  en: 195fe153d9b18ef0
+  zh: 57f322c756e6d1a9
+/enterprise-product-requirements/table-of-contents:
+  en: 6d72019d3fa2d3fe
+  zh: fc7c013a05c026ec
+/enterprise-product-requirements/users-and-scope:
+  en: 27e11fe444849ea9
+  zh: daf2dff373aa2c26
+/enterprise-product-requirements/requirements:
+  en: a2c5fa7bcbd7176a
+  zh: c9048012353f74d8
+/enterprise-product-requirements/product-flows-and-pages:
+  en: 9bf04e5b450a5773
+  zh: 5b84379e96d601f0
+/enterprise-product-requirements/policy-experience:
+  en: a9768cdaea99e6aa
+  zh: beb69de3ff06271e
+/enterprise-product-requirements/acceptance-objectives:
+  en: 713880c92a46a771
+  zh: 7f9914ada0264ce7
+/enterprise-product-requirements/dev-note:
+  en: 64e0f0def41a8e01
+  zh: 416e0562b9b30f88

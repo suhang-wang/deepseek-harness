@@ -5,7 +5,10 @@
  * @param environment Parent environment, retained for build tools and networking.
  * @returns Unsigned build environment with the standard application identifier and no update policy.
  */
-export function localMacOSPackageEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv
+export function localMacOSPackageEnvironment(
+  environment?: NodeJS.ProcessEnv,
+  edition?: 'official' | 'enterprise',
+): NodeJS.ProcessEnv
 
 /**
  * Read a machine preset when selected, otherwise the target's required dotenv; no ambient release fallback.

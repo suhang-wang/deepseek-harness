@@ -2,6 +2,8 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
+import type { ActiveDesktopSession, DesktopSessionSecretKey } from './keychain-session-store.ts'
+import { enterpriseIdentityStatesEqual, parseEnterpriseIdentityState, type EnterpriseIdentityState } from './enterprise-identity-state.ts'
 import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
 import { desktopNodeEnvironment } from './node-environment.ts'
 
@@ -23,7 +25,42 @@ interface PlatformSessionEvent {
   readonly session: PlatformSession | null
 }
 
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'shutdown-complete' } | {
+interface SecureStoreRequestEvent {
+  readonly type: 'secure-store-request'
+  readonly requestId: number
+  readonly operation: 'get' | 'set' | 'delete' | 'save-active-session' | 'rotate-refresh' | 'clear-active-session' | 'acknowledge-revocation' | 'queue-revocation'
+  readonly key?: DesktopSessionSecretKey
+  readonly value?: string
+  readonly session?: ActiveDesktopSession
+  readonly expectedRefreshToken?: string
+  readonly nextRefreshToken?: string
+}
+
+interface BrowserOpenRequestEvent {
+  readonly type: 'browser-open-request'
+  readonly requestId: number
+  readonly url: string
+}
+
+interface EnterpriseIdentityChangeEvent {
+  readonly type: 'enterprise-identity-change'
+  readonly state: EnterpriseIdentityState
+}
+
+/** Native session storage capability supplied by Electron safeStorage. */
+export interface DesktopHostSecureStore {
+  get(key: DesktopSessionSecretKey): Promise<string | null>
+  set(key: DesktopSessionSecretKey, value: string): Promise<void>
+  delete(key: DesktopSessionSecretKey): Promise<void>
+  saveActiveSession(session: ActiveDesktopSession): Promise<void>
+  rotateRefresh(expectedRefreshToken: string, nextRefreshToken: string): Promise<boolean>
+  clearActiveSession(): Promise<void>
+  acknowledgeRevocation(capability: string): Promise<void>
+  queueRevocation(capability: string): Promise<void>
+}
+
+type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | SecureStoreRequestEvent | BrowserOpenRequestEvent
+  | EnterpriseIdentityChangeEvent | { readonly type: 'shutdown-complete' } | {
   readonly type: 'update-tasks'
   readonly requestId: number
   readonly active: boolean
@@ -49,6 +86,14 @@ export interface DesktopQuitInspection {
 export const QUIT_INSPECTION_DEADLINE_MS = 2_000
 
 const MAX_HOST_DIAGNOSTIC_CHARS = 64 * 1024
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+
+function isValidSecureStoreValue(key: DesktopSessionSecretKey, value: string): boolean {
+  if (key === 'employee-id' || key === 'company-id') return ID_PATTERN.test(value)
+  if (key === 'revocation-queue') return false
+  return TOKEN_PATTERN.test(value)
+}
 
 function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
   if (typeof message !== 'object' || message === null || !('type' in message)) return false
@@ -77,6 +122,37 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
           && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
       } catch { return false }
     }
+    case 'secure-store-request':
+      if (!Number.isSafeInteger(candidate.requestId) || Number(candidate.requestId) <= 0) return false
+      if (candidate.operation === 'get' || candidate.operation === 'delete') return ['refresh', 'logout-capability', 'employee-id', 'company-id', 'revocation-queue'].includes(String(candidate.key)) && candidate.value === undefined && candidate.session === undefined
+      if (candidate.operation === 'set') return ['refresh', 'logout-capability', 'employee-id', 'company-id'].includes(String(candidate.key))
+        && typeof candidate.value === 'string' && isValidSecureStoreValue(candidate.key as DesktopSessionSecretKey, candidate.value)
+        && candidate.session === undefined
+      if (candidate.operation === 'clear-active-session') return candidate.key === undefined && candidate.value === undefined && candidate.session === undefined
+      if (candidate.operation === 'acknowledge-revocation') return candidate.key === undefined && typeof candidate.value === 'string' && TOKEN_PATTERN.test(candidate.value) && candidate.session === undefined
+      if (candidate.operation === 'queue-revocation') return candidate.key === undefined && typeof candidate.value === 'string' && TOKEN_PATTERN.test(candidate.value) && candidate.session === undefined
+      if (candidate.operation === 'rotate-refresh') {
+        return Object.keys(candidate).every(key => ['type', 'requestId', 'operation', 'expectedRefreshToken', 'nextRefreshToken'].includes(key))
+          && typeof candidate.expectedRefreshToken === 'string' && TOKEN_PATTERN.test(candidate.expectedRefreshToken)
+          && typeof candidate.nextRefreshToken === 'string' && TOKEN_PATTERN.test(candidate.nextRefreshToken)
+      }
+      if (candidate.operation === 'save-active-session') {
+        if (candidate.key !== undefined || candidate.value !== undefined || typeof candidate.session !== 'object' || candidate.session === null) return false
+        const session = candidate.session as Record<string, unknown>
+        return Object.keys(session).length === 4 && typeof session.refreshToken === 'string' && TOKEN_PATTERN.test(session.refreshToken)
+          && typeof session.logoutCapability === 'string' && TOKEN_PATTERN.test(session.logoutCapability)
+          && typeof session.employeeId === 'string' && ID_PATTERN.test(session.employeeId)
+          && typeof session.companyId === 'string' && ID_PATTERN.test(session.companyId)
+      }
+      return false
+    case 'enterprise-identity-change':
+      return parseEnterpriseIdentityState(candidate.state) !== null
+    case 'browser-open-request':
+      if (!Number.isSafeInteger(candidate.requestId) || Number(candidate.requestId) <= 0 || typeof candidate.url !== 'string' || candidate.url.length > 2048) return false
+      try {
+        const url = new URL(candidate.url)
+        return url.protocol === 'https:' && !url.username && !url.password
+      } catch { return false }
     case 'fatal':
       return typeof candidate.message === 'string' && (candidate.diagnostic === undefined || typeof candidate.diagnostic === 'string')
     case 'update-tasks':
@@ -149,6 +225,9 @@ export class DesktopHostProcess {
   private stopping = false
   private shutdownCompleted = false
   private nextControlId = 1
+  private enterpriseIdentityDeliveryReady = false
+  private pendingEnterpriseIdentity: EnterpriseIdentityState | undefined
+  private deliveredEnterpriseIdentity: EnterpriseIdentityState | undefined
   private readonly controlRequests = new Map<number, {
     resolve: (response: DesktopHostControlResponse) => void
     reject: (error: Error) => void
@@ -177,7 +256,22 @@ export class DesktopHostProcess {
     private readonly packageManager?: { readonly pnpm: string; readonly nodeBin: string },
 
     private readonly onPlatformSession?: (session: PlatformSession | null) => void,
+    private readonly secureStore?: DesktopHostSecureStore,
+    private readonly openExternal?: (url: string) => Promise<void>,
+    private readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+    private readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+    private readonly onEnterpriseIdentity?: (state: EnterpriseIdentityState) => void,
+    private readonly enterpriseServiceOrigin?: string,
   ) {}
+
+  /** Enables enterprise identity delivery after the native wrapper has finished its own startup bookkeeping. */
+  flushPendingEnterpriseIdentity(): void {
+    if (this.enterpriseIdentityDeliveryReady) return
+    this.enterpriseIdentityDeliveryReady = true
+    const state = this.pendingEnterpriseIdentity
+    this.pendingEnterpriseIdentity = undefined
+    if (state !== undefined) this.deliverEnterpriseIdentity(state)
+  }
 
   /**
    * Start this child once and await its Web application URL.
@@ -194,9 +288,14 @@ export class DesktopHostProcess {
       this.projectDir,
       this.primaryRuntime ?? join(this.runtimeDir, '..', 'runtime', 'primary-runtime'),
       ...this.packageManager === undefined ? [] : [this.packageManager.pnpm, this.packageManager.nodeBin],
+      ...(this.allowedHostPlugins === undefined ? [] : [`--dsh-host-plugin-allowlist=${JSON.stringify({
+        plugins: this.allowedHostPlugins, packages: this.trustedHostPackages,
+        ...(this.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: this.enterpriseServiceOrigin }),
+      })}`]),
     ], {
       cwd: this.projectDir,
-      env: desktopNodeEnvironment(this.node, undefined, this.environment),
+      env: desktopNodeEnvironment(this.node, undefined, this.enterpriseServiceOrigin === undefined ? this.environment
+        : { ...this.environment, DSH_ENTERPRISE_SERVICE_ORIGIN: this.enterpriseServiceOrigin }),
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
     this.child = child
@@ -211,6 +310,14 @@ export class DesktopHostProcess {
       }
       if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
+      else if (message.type === 'secure-store-request') void this.answerSecureStoreRequest(message)
+      else if (message.type === 'browser-open-request') void this.answerBrowserOpenRequest(message)
+      else if (message.type === 'enterprise-identity-change') {
+        if (!this.acceptEnterpriseIdentityChange(message.state)) {
+          this.fail(new Error('dsh desktop host sent an invalid IPC event'))
+          child.kill('SIGTERM')
+        }
+      }
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))
@@ -307,6 +414,34 @@ export class DesktopHostProcess {
     }
   }
 
+  private acceptEnterpriseIdentityChange(state: EnterpriseIdentityState): boolean {
+    if (!this.hasApprovedEnterpriseIdentityPackage()) return false
+    if (this.stopping || this.failureReported) return true
+    const current = this.enterpriseIdentityDeliveryReady ? this.deliveredEnterpriseIdentity : this.pendingEnterpriseIdentity
+    if (current !== undefined) {
+      if (state.generation < current.generation) return true
+      if (state.generation === current.generation && enterpriseIdentityStatesEqual(state, current)) return true
+    }
+    if (this.enterpriseIdentityDeliveryReady) this.deliverEnterpriseIdentity(state)
+    else this.pendingEnterpriseIdentity = state
+    return true
+  }
+
+  private hasApprovedEnterpriseIdentityPackage(): boolean {
+    if (this.allowedHostPlugins === undefined) return false
+    return this.allowedHostPlugins.some(plugin => plugin.name === '@dsh-enterprise/harness-identity')
+  }
+
+  private deliverEnterpriseIdentity(state: EnterpriseIdentityState): void {
+    if (this.stopping || this.failureReported) return
+    this.deliveredEnterpriseIdentity = state
+    try {
+      this.onEnterpriseIdentity?.(state)
+    } catch {
+      this.fail(new Error('dsh desktop host enterprise identity listener failed'))
+    }
+  }
+
   private fail(error: Error): void {
     this.onPlatformSession?.(null)
     this.readyReject(error)
@@ -318,5 +453,71 @@ export class DesktopHostProcess {
         console.error('desktop host failure listener failed', listenerError)
       }
     }
+  }
+
+  private async answerSecureStoreRequest(request: SecureStoreRequestEvent): Promise<void> {
+    const child = this.child
+    let response: { readonly type: 'secure-store-response'; readonly requestId: number; readonly success: boolean; readonly value?: string | null | boolean } = {
+      type: 'secure-store-response', requestId: request.requestId, success: false,
+    }
+    if (this.secureStore !== undefined && this.hasApprovedEnterpriseIdentityPackage() && !this.stopping && !this.failureReported) {
+      try {
+        if (request.operation === 'get' && request.key !== undefined) response = {
+          type: 'secure-store-response', requestId: request.requestId, success: true,
+          value: await this.secureStore.get(request.key),
+        }
+        else if (request.operation === 'set' && request.key !== undefined) {
+          if (request.value === undefined) throw new Error('Invalid secure-store request')
+          await this.secureStore.set(request.key, request.value)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'delete' && request.key !== undefined) {
+          await this.secureStore.delete(request.key)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'save-active-session' && request.session !== undefined) {
+          await this.secureStore.saveActiveSession(request.session)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'rotate-refresh' && request.expectedRefreshToken !== undefined && request.nextRefreshToken !== undefined) {
+          response = {
+            type: 'secure-store-response', requestId: request.requestId, success: true,
+            value: await this.secureStore.rotateRefresh(request.expectedRefreshToken, request.nextRefreshToken),
+          }
+        }
+        else if (request.operation === 'clear-active-session') {
+          await this.secureStore.clearActiveSession()
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'acknowledge-revocation' && request.value !== undefined) {
+          await this.secureStore.acknowledgeRevocation(request.value)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'queue-revocation' && request.value !== undefined) {
+          await this.secureStore.queueRevocation(request.value)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+      } catch {
+        response = { type: 'secure-store-response', requestId: request.requestId, success: false }
+      }
+    }
+    if (child?.connected) {
+      const finalResponse = this.stopping || this.failureReported
+        ? { type: 'secure-store-response' as const, requestId: request.requestId, success: false }
+        : response
+      child.send(finalResponse, (error) => { if (error !== null) this.fail(new Error('dsh desktop host secure storage IPC failed')) })
+    }
+  }
+
+  private async answerBrowserOpenRequest(request: BrowserOpenRequestEvent): Promise<void> {
+    const child = this.child
+    let success = false
+    if (this.openExternal !== undefined && this.hasApprovedEnterpriseIdentityPackage() && !this.stopping && !this.failureReported) {
+      try { await this.openExternal(request.url); success = true } catch { success = false }
+    }
+    if (child?.connected) child.send({
+      type: 'browser-open-response', requestId: request.requestId,
+      success: success && !this.stopping && !this.failureReported,
+    }, (error) => { if (error !== null) this.fail(new Error('dsh desktop host browser IPC failed')) })
   }
 }

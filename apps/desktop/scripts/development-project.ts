@@ -163,7 +163,7 @@ export function prepareDevelopmentProject(options: DevelopmentProjectOptions): s
     return typeof manifest.version === 'string' ? [{ name, version: manifest.version, path: `node_modules/${name}` }] : []
   })
   const runtime: DesktopRuntimeDescriptor = { schemaVersion: 1, release: options.release,
-    ...desktopTargetPlatform(options.target), sharedPackages, files: [] }
+    ...desktopTargetPlatform(options.target), sharedPackages, trustedHostPackages: sharedPackages, files: [] }
   writeFileSync(join(options.projectDir, DESKTOP_RUNTIME_FILE), `${JSON.stringify(runtime, undefined, 2)}\n`)
   return options.projectDir
 }

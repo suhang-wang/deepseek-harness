@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { windowsCiVersion } from '../scripts/prepare-windows-ci.mjs'
+import { parseEnv } from 'node:util'
+import { windowsCiSettings, windowsCiVersion } from '../scripts/prepare-windows-ci.mjs'
 
 const inputs = { PACKAGE_BUILD_VERSION: 'auto', GITHUB_RUN_NUMBER: '42', GITHUB_RUN_ATTEMPT: '2' }
 const now = new Date('2026-10-09T01:02:03Z')
+const productVersion = '0.2.1-alpha.1'
 
 describe('manual Windows CI version', () => {
   it('uses the selected product prefix and UTC run identity', () => {
@@ -18,6 +20,34 @@ describe('manual Windows CI version', () => {
   })
   it.each([{ GITHUB_RUN_NUMBER: '0' }, { GITHUB_RUN_ATTEMPT: '1\nINJECTED=value' }])('rejects invalid run identity %j', (override) => {
     expect(() => windowsCiVersion({ ...inputs, ...override }, '0.2.1', now)).toThrow(/positive integer/u)
+  })
+
+  it('selects the provisional enterprise app ID without adding release-only settings', () => {
+    const result = windowsCiSettings({ ...inputs, PACKAGE_EDITION: 'enterprise' }, productVersion, now)
+    expect(result.edition).toBe('enterprise')
+    const settings = parseEnv(result.settings)
+    expect(settings.DSH_DESKTOP_APP_ID).toBe('com.deepseek.harness.enterprise.local')
+    expect(Object.keys(settings).sort()).toEqual([
+      'DSH_DESKTOP_APP_ID', 'DSH_DESKTOP_AUTO_UPDATE_ENV',
+      'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN', 'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG',
+    ].sort())
+  })
+
+  it.each([
+    { PACKAGE_BUILD_VERSION: '' },
+    { PACKAGE_BUILD_VERSION: '0.3.0' },
+    { PACKAGE_DEPLOYMENT: 'staging' },
+    { PACKAGE_EDITION: 'staging' },
+    { PACKAGE_POLICY_ORIGIN: '' },
+    { PACKAGE_POLICY_ORIGIN: 'http://policy.example.com' },
+    { PACKAGE_POLICY_ORIGIN: 'https://policy.example.com/path' },
+    { PACKAGE_LOGIN_ORIGINS: '' },
+    { PACKAGE_LOGIN_ORIGINS: 'https://user:password@login.example.com' },
+    { PACKAGE_DEPLOYMENT: 'production' },
+    { GITHUB_RUN_NUMBER: '0' },
+    { GITHUB_RUN_ATTEMPT: '1\nINJECTED=value' },
+  ])('rejects invalid manual settings %j', (override) => {
+    expect(() => windowsCiSettings({ ...inputs, ...override }, productVersion, now)).toThrow()
   })
 })
 
