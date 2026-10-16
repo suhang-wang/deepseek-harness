@@ -2,7 +2,7 @@ import { officePackageDirectories } from '../../../scripts/libreoffice-packages.
 import { X509Certificate } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { join, relative, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -81,6 +81,7 @@ export function createElectronBuilderConfig(
         const buildDirDefinePath = join(buildPaths.root, 'installer-build-dir.nsh')
         const includeWrapperPath = join(buildPaths.root, 'installer-include.nsh')
         const installerNshPath = fileURLToPath(new URL('./installer.nsh', import.meta.url))
+        const installerNshDir = dirname(installerNshPath)
         const toNsisPath = p => p.replace(/\\/g, '/')
         mkdirSync(buildPaths.root, { recursive: true })
         writeFileSync(buildDirDefinePath,
@@ -89,6 +90,7 @@ export function createElectronBuilderConfig(
           'utf8')
         writeFileSync(includeWrapperPath,
           `; Auto-generated NSIS include wrapper.\n` +
+          `!define DSH_INSTALLER_NSH_DIR "${toNsisPath(installerNshDir)}"\n` +
           `!include "${toNsisPath(buildDirDefinePath)}"\n` +
           `!include "${toNsisPath(installerNshPath)}"\n`,
           'utf8')

@@ -1,8 +1,11 @@
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
-!define INSTALLER_SOURCE_DIR "${__FILEDIR__}\..\installer"
+!ifndef DSH_INSTALLER_NSH_DIR
+  !define DSH_INSTALLER_NSH_DIR "${__FILEDIR__}"
+!endif
+!define INSTALLER_SOURCE_DIR "${DSH_INSTALLER_NSH_DIR}\..\installer"
 !ifndef INSTALLER_BUILD_DIR
-  !define INSTALLER_BUILD_DIR "${__FILEDIR__}\..\.desktop-build\targets\win-x64\installer-ui"
+  !define INSTALLER_BUILD_DIR "${DSH_INSTALLER_NSH_DIR}\..\.desktop-build\targets\win-x64\installer-ui"
 !endif
 
 ManifestDPIAware true
@@ -229,7 +232,7 @@ ManifestDPIAware true
 !macroend
 
 !ifndef BUILD_UNINSTALLER
-  !include "${__FILEDIR__}\installer-directories.nsh"
+  !include "${DSH_INSTALLER_NSH_DIR}\installer-directories.nsh"
 !endif
 
 !macro customInstall
