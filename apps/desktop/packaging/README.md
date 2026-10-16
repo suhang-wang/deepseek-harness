@@ -254,7 +254,7 @@ Windows packaging generates the NSIS bootstrap and uninstaller under unique shor
 
 NSIS removes its temporary extraction tree during installation, before the completion page or an automatic launch. The installed production packages remain ordinary files; startup does not extract them again. Installation still writes the complete application tree.
 
-Windows packaged-runtime checks copy the complete assembled application to a private temporary directory before launching it. This keeps ConPTY DLL paths below the native dependency’s legacy path limit even when company build directories are deeply nested. The checks retain real PTY allocation and remove the copy after success or failure; signed builds verify the copied application. Passing this check does not establish support for arbitrary long installation paths.
+Windows packaged-runtime checks copy the complete assembled application to a private temporary directory before launching it, using its physical path so Windows short-name aliases do not create different module-resolution roots. This keeps ConPTY DLL paths below the native dependency’s legacy path limit even when company build directories are deeply nested. Plugin-route failures retain the HTTP status, a bounded response excerpt, and bounded Host stderr with the smoke login token redacted. The checks retain real PTY allocation and remove the copy after success or failure; signed builds verify the copied application. Passing this check does not establish support for arbitrary long installation paths.
 
 <a id="desktop-runtime-preparation"></a>
 

@@ -76,6 +76,16 @@ afterEach(async () => {
 })
 
 describe('desktop host process', () => {
+  it('retains bounded child diagnostics for a failed runtime check', async () => {
+    const runtime = projectWithHost(HTTP_HOST.replace("server.listen(0, '127.0.0.1', () => {",
+      "process.stderr.write('x'.repeat(70000) + 'plugin load failed')\nserver.listen(0, '127.0.0.1', () => {"))
+    const host = hostProcess(runtime)
+    await host.start()
+    await host.stop()
+    expect(host.diagnostic.length).toBeLessThanOrEqual(64 * 1024)
+    expect(host.diagnostic.endsWith('plugin load failed')).toBe(true)
+  })
+
   it('passes the sealed Host plugin list to the child without using environment overrides', async () => {
     const runtime = projectWithHost(HTTP_HOST.replace('nodePath: process.env.NODE_PATH',
       "allowlist: process.argv.find(argument => argument.startsWith('--dsh-host-plugin-allowlist=')), enterpriseOrigin: process.env.DSH_ENTERPRISE_SERVICE_ORIGIN"))
@@ -234,7 +244,8 @@ describe('desktop host process', () => {
     `)
     const changed = vi.fn()
     const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
-      undefined, undefined, undefined, undefined, undefined, undefined, ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST, changed)
+      undefined, undefined, undefined, undefined, undefined, undefined,
+      ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST, changed)
     hosts.push(host)
     const { url } = await host.start()
     expect(changed).not.toHaveBeenCalled()
@@ -270,7 +281,7 @@ describe('desktop host process', () => {
     const failures: Error[] = []
     const changed = vi.fn(() => { throw new Error('coordinator failed') })
     const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
-      error => { failures.push(error) }, undefined, undefined, undefined, undefined, undefined,
+      (error) => { failures.push(error) }, undefined, undefined, undefined, undefined, undefined,
       ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST, changed)
     hosts.push(host)
     const { url } = await host.start()
@@ -367,7 +378,8 @@ describe('desktop host process', () => {
     const failure = new Promise<Error>((resolve) => { reportFailure = resolve })
     const secureStore = {
       get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined),
-      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true), clearActiveSession: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
       acknowledgeRevocation: vi.fn(async () => undefined), queueRevocation: vi.fn(async () => undefined),
     }
     const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, reportFailure,

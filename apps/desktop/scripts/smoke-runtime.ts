@@ -156,7 +156,13 @@ export function apply(ctx) {
       throw new Error('desktop runtime: packaged frontend smoke failed')
     }
     const pluginResponse = await fetch(new URL('/desktop-smoke', ready.url), { headers: { cookie } })
-    if (await pluginResponse.text() !== 'plugin route ready') throw new Error('desktop runtime: plugin HTTP route failed')
+    const pluginBody = await pluginResponse.text()
+    if (pluginBody !== 'plugin route ready') {
+      const token = new URL(ready.url).searchParams.get('token')
+      const details = `${pluginBody.slice(0, 1024)}\n${host.diagnostic}`
+      const diagnostic = token === null ? details : details.replaceAll(token, '[REDACTED]')
+      throw new Error(`desktop runtime: plugin HTTP route failed (HTTP ${String(pluginResponse.status)}): ${diagnostic}`)
+    }
     const installation = await fetch(new URL('/desktop-smoke-install', ready.url), {
       headers: { cookie }, signal: AbortSignal.timeout(120_000),
     })

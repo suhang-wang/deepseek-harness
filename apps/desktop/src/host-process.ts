@@ -61,17 +61,17 @@ export interface DesktopHostSecureStore {
 
 type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | SecureStoreRequestEvent | BrowserOpenRequestEvent
   | EnterpriseIdentityChangeEvent | { readonly type: 'shutdown-complete' } | {
-  readonly type: 'update-tasks'
-  readonly requestId: number
-  readonly active: boolean
-  readonly error?: string
-} | {
-  readonly type: 'quit-inspection'
-  readonly requestId: number
-  readonly activeTasks: boolean
-  readonly scheduledTasks: boolean
-  readonly error?: string
-}
+    readonly type: 'update-tasks'
+    readonly requestId: number
+    readonly active: boolean
+    readonly error?: string
+  } | {
+    readonly type: 'quit-inspection'
+    readonly requestId: number
+    readonly activeTasks: boolean
+    readonly scheduledTasks: boolean
+    readonly error?: string
+  }
 
 /** Correlated answer to one shell control request. */
 type DesktopHostControlResponse = Extract<DesktopHostEvent, { readonly requestId: number }>
@@ -221,6 +221,8 @@ export class DesktopHostProcess {
   })
   private exitPromise: Promise<void> | undefined
   private stderr = ''
+  /** Bounded child stderr for private diagnostics; callers must redact credentials before publishing. */
+  get diagnostic(): string { return this.stderr }
   private failureReported = false
   private stopping = false
   private shutdownCompleted = false

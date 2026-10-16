@@ -1,5 +1,5 @@
 /** Keep Windows runtime checks independent of the checkout's nesting depth. */
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -8,6 +8,10 @@ import { withPackagedSmokeApplication } from '../scripts/packaged-smoke-director
 vi.mock('node:fs/promises', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs/promises')>()
   return { ...fs, cp: vi.fn(fs.cp) }
+})
+vi.mock('node:os', async (importOriginal) => {
+  const os = await importOriginal<typeof import('node:os')>()
+  return { ...os, tmpdir: vi.fn(os.tmpdir) }
 })
 
 const roots: string[] = []
@@ -45,6 +49,20 @@ it('checks an independent full Windows application copy and removes it after com
   await expect(readFile(join(staged, 'Company Harness.exe'))).rejects.toMatchObject({ code: 'ENOENT' })
   await expect(readFile(join(source, 'runtime-marker'))).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await readFile(join(source, 'Company Harness.exe'), 'utf8')).toBe('executable-bytes')
+})
+
+it('uses the physical temporary path when the system temp directory is an alias', async () => {
+  const source = await fixture()
+  const root = await mkdtemp(join(tmpdir(), 'dsh-smoke-alias-'))
+  roots.push(root)
+  const physical = join(root, 'physical')
+  const alias = join(root, 'alias')
+  await mkdir(physical)
+  await symlink(physical, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  vi.mocked(tmpdir).mockReturnValueOnce(alias)
+  await withPackagedSmokeApplication(source, async (application) => {
+    expect(application).toBe(await realpath(application))
+  }, 'win32')
 })
 
 it('cleans a partial copy and never starts the runtime check after a copy error', async () => {

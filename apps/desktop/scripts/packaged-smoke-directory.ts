@@ -1,5 +1,5 @@
 /** Stage Windows runtime checks outside deeply nested company build directories. */
-import { cp, mkdtemp, rm } from 'node:fs/promises'
+import { cp, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -22,7 +22,7 @@ export async function withPackagedSmokeApplication(
   let failure: { error: unknown } | undefined
   try {
     await cp(application, staged, { recursive: true, dereference: true, force: false, errorOnExist: true })
-    await check(staged)
+    await check(await realpath(staged))
   } catch (error) {
     failure = { error }
   }
