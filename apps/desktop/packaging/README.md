@@ -250,6 +250,8 @@ When extraction fails, the installer writes a report with the 7-Zip result and i
 
 Windows packaging fixes the 7-Zip filter to `BCJ` for compatibility with the bundled NSIS decoder. This preserves ARM64 binaries carried by dependencies in x64 installers; automatic ARM64 filtering produces entries that this decoder cannot extract.
 
+Windows packaging generates the NSIS bootstrap and uninstaller under unique short temporary names in the artifact directory. The final installer keeps its configured artifact name. Packaging rejects output paths that exceed the Windows limit and reports a missing or empty generated uninstaller before assembling the final installer. Use a shorter checkout path if the artifact directory itself is too long.
+
 NSIS removes its temporary extraction tree during installation, before the completion page or an automatic launch. The installed production packages remain ordinary files; startup does not extract them again. Installation still writes the complete application tree.
 
 <a id="desktop-runtime-preparation"></a>

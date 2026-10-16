@@ -1,5 +1,6 @@
 /** Adapt the pinned NSIS template to stage and rename complete application directories. */
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 
@@ -61,6 +62,41 @@ export function installWindowsDirectoryInstaller() {
   const prototype = NsisTarget.prototype
   if (prototype[patched]) return
   prototype[patched] = true
+  const computeUninstaller = prototype.computeScriptAndSignUninstaller
+  prototype.computeScriptAndSignUninstaller = async function (defines, commands, installerPath, ...args) {
+    // Custom scripts own uninstaller generation and must retain their original output path.
+    if (await this.packager.getResource(this.options.script, 'installer.nsi') != null) {
+      return computeUninstaller.call(this, defines, commands, installerPath, ...args)
+    }
+    const name = `nsis-${randomBytes(6).toString('hex')}`
+    const bootstrap = join(this.outDir, `${name}.exe`)
+    const uninstaller = join(this.outDir, `${name}.__uninstaller.exe`)
+    if (uninstaller.length >= 260 || installerPath.length >= 260) {
+      throw new Error('Desktop NSIS output path exceeds the Windows limit; use a shorter checkout path')
+    }
+    let completed = false
+    let result
+    const failures = []
+    try {
+      result = await computeUninstaller.call(this, defines, { ...commands, OutFile: `"${bootstrap}"` }, bootstrap, ...args)
+      const generated = await stat(uninstaller).catch(error => {
+        throw new Error('Desktop NSIS bootstrap did not create its uninstaller', { cause: error })
+      })
+      if (!generated.isFile() || generated.size === 0 || defines.UNINSTALLER_OUT_FILE !== uninstaller) {
+        throw new Error('Desktop NSIS bootstrap produced an invalid uninstaller')
+      }
+      completed = true
+    } catch (error) {
+      failures.push(error)
+    }
+    // The final installer embeds this file and electron-builder then removes it.
+    const cleanup = await Promise.allSettled((completed ? [bootstrap] : [bootstrap, uninstaller])
+      .map(path => rm(path, { force: true })))
+    failures.push(...cleanup.filter(item => item.status === 'rejected').map(item => item.reason))
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, 'Desktop NSIS generation and cleanup failed')
+    return result
+  }
   const compute = prototype.computeFinalScript
   prototype.computeFinalScript = async function (source, ...args) {
     const directory = join(this.outDir, '.nsis-directory-installer')
