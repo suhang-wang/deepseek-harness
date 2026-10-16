@@ -82,13 +82,12 @@ export function createElectronBuilderConfig(
         const includeWrapperPath = join(buildPaths.root, 'installer-include.nsh')
         const installerNshPath = fileURLToPath(new URL('./installer.nsh', import.meta.url))
         const installerNshDir = dirname(installerNshPath)
-        const toNsisPath = p => p.replace(/\\/g, '/')
         mkdirSync(buildPaths.root, { recursive: true })
         writeFileSync(includeWrapperPath,
           `; Auto-generated NSIS include wrapper.\n` +
-          `!define DSH_INSTALLER_NSH_DIR "${toNsisPath(installerNshDir)}"\n` +
-          `!define INSTALLER_BUILD_DIR "${toNsisPath(join(buildPaths.root, 'installer-ui'))}"\n` +
-          `!include "${toNsisPath(installerNshPath)}"\n`,
+          `!define DSH_INSTALLER_NSH_DIR "${installerNshDir}"\n` +
+          `!define INSTALLER_BUILD_DIR "${join(buildPaths.root, 'installer-ui')}"\n` +
+          `!include "${installerNshPath}"\n`,
           'utf8')
         return includeWrapperPath
       })()
