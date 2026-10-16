@@ -74,24 +74,20 @@ export function createElectronBuilderConfig(
   const buildPaths = resolveDesktopTargetBuildPaths(env, hostPlatform, hostArch)
   const output = desktopArtifactOutput(buildPaths, { unsigned, skipNotarization })
   // Windows enterprise builds place installer UI assets under a company-specific build root.
-  // Generate a per-target NSIS include wrapper that defines INSTALLER_BUILD_DIR so installer.nsh
-  // resolves the assets from the correct directory instead of the hardcoded non-enterprise path.
+  // Generate a per-target NSIS include wrapper that defines INSTALLER_BUILD_DIR and
+  // DSH_INSTALLER_NSH_DIR so installer.nsh resolves the assets and sibling scripts from the
+  // correct directories instead of the hardcoded non-enterprise path.
   const nsisInclude = packagesWindows
     ? (() => {
-        const buildDirDefinePath = join(buildPaths.root, 'installer-build-dir.nsh')
         const includeWrapperPath = join(buildPaths.root, 'installer-include.nsh')
         const installerNshPath = fileURLToPath(new URL('./installer.nsh', import.meta.url))
         const installerNshDir = dirname(installerNshPath)
         const toNsisPath = p => p.replace(/\\/g, '/')
         mkdirSync(buildPaths.root, { recursive: true })
-        writeFileSync(buildDirDefinePath,
-          `; Auto-generated installer build directory define.\n` +
-          `!define INSTALLER_BUILD_DIR "${toNsisPath(join(buildPaths.root, 'installer-ui'))}"\n`,
-          'utf8')
         writeFileSync(includeWrapperPath,
           `; Auto-generated NSIS include wrapper.\n` +
           `!define DSH_INSTALLER_NSH_DIR "${toNsisPath(installerNshDir)}"\n` +
-          `!include "${toNsisPath(buildDirDefinePath)}"\n` +
+          `!define INSTALLER_BUILD_DIR "${toNsisPath(join(buildPaths.root, 'installer-ui'))}"\n` +
           `!include "${toNsisPath(installerNshPath)}"\n`,
           'utf8')
         return includeWrapperPath
