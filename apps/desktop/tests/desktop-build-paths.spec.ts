@@ -5,6 +5,7 @@ import {
   desktopTargetPlatform,
   developmentRuntimeDirectory,
   resolveDesktopBuildTarget,
+  resolveDesktopTargetBuildPaths,
 } from '../scripts/desktop-build-paths.mjs'
 
 describe('desktop build paths', () => {
@@ -47,6 +48,23 @@ describe('desktop build paths', () => {
     const x64 = desktopTargetBuildPaths('mac-x64')
     expect(arm64.downloads).toBe(x64.downloads)
     expect(arm64.downloads).not.toContain(`${sep}targets${sep}`)
+  })
+
+  it('isolates company preparation and artifacts by application ID while retaining legacy paths', () => {
+    const first = resolveDesktopTargetBuildPaths({ DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_APP_ID: 'com.example.company-one' }, 'darwin', 'arm64')
+    const second = resolveDesktopTargetBuildPaths({ DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_APP_ID: 'com.example.company-two' }, 'darwin', 'arm64')
+    for (const key of Object.keys(first) as (keyof typeof first)[]) {
+      if (key === 'downloads') expect(first[key]).toBe(second[key])
+      else expect(first[key]).not.toBe(second[key])
+    }
+    expect(first.root).toContain(join('enterprise', 'companies', 'com.example.company-one', 'targets', 'mac-arm64'))
+    expect(resolveDesktopTargetBuildPaths({ DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local' }, 'darwin', 'arm64'))
+      .toEqual(desktopTargetBuildPaths('mac-arm64', 'enterprise'))
+    expect(() => desktopTargetBuildPaths('mac-arm64', 'enterprise', '../escape')).toThrow(/company app ID/u)
+    expect(() => desktopTargetBuildPaths('mac-arm64', 'official', 'com.example.company')).toThrow(/enterprise/u)
   })
 
   it('resolves the development primary runtime from the build target rather than the host architecture', () => {

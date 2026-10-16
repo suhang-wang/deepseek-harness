@@ -69,10 +69,16 @@ describe('desktop package target', () => {
       'mac-arm64', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
       '--enterprise-service-origin', 'https://api.example.test',
     ], 'darwin', 'arm64').unsigned).toBe(false)
+    const windowsEnterprise = parseDesktopPackageInvocation([
+      'win-x64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+      '--enterprise-service-origin', 'https://api.example.test',
+    ], 'win32', 'x64').enterprise
+    expect(windowsEnterprise?.serviceOrigin).toBe('https://api.example.test')
+    expect(windowsEnterprise?.packagesRoot).toContain('enterprise-package-input')
     expect(() => parseDesktopPackageInvocation([
       'mac-x64', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
       '--enterprise-service-origin', 'https://api.example.test',
-    ], 'darwin', 'arm64')).toThrow(/mac-arm64 only/u)
+    ], 'darwin', 'arm64')).toThrow(/enterprise packaging supports mac-arm64 and win-x64 only/u)
   })
 
   it('parses a build version, including the separator a pnpm run script forwards', () => {

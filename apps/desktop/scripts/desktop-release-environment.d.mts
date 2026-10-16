@@ -2,6 +2,8 @@
 export const DESKTOP_APP_ID_ENV: 'DSH_DESKTOP_APP_ID'
 export const LOCAL_ENTERPRISE_APP_ID: 'com.deepseek.harness.enterprise.local'
 export const OFFICIAL_APP_ID: 'com.deepseek.harness'
+export const ENTERPRISE_PROTOCOL_SCHEME_ENV: 'DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME'
+export const ENTERPRISE_PRODUCT_NAME_ENV: 'DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME'
 
 /** Environment variable that supplies electron-builder's macOS certificate qualifier. */
 export const MACOS_SIGNING_IDENTITY_ENV: 'DSH_DESKTOP_MACOS_SIGNING_IDENTITY'

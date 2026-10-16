@@ -1,4 +1,4 @@
-/** Resolve Keychain access before opening the browser for one-time enterprise authorization. */
+/** Resolve OS-backed credential storage before opening one-time enterprise authorization. */
 export async function beginEnterpriseLoginAfterStorageReady<T>(
   storage: { readonly probeWritable: () => Promise<void> },
   beginLogin: () => Promise<T>,
@@ -19,7 +19,8 @@ export async function beginEnterpriseLoginAfterStorageReady<T>(
     if (process.env.DSH_ENTERPRISE_LOGIN_DIAGNOSTICS === '1') {
       const detail = error instanceof Error && [
         'Keychain readiness timed out.', 'Keychain operation timed out.',
-        'Keychain encryption is unavailable.', 'Stored session data is unavailable.',
+        'Keychain encryption is unavailable.', 'Windows secure storage encryption is unavailable.',
+        'Windows secure storage operation timed out.', 'Stored session data is unavailable.',
       ].includes(error.message) ? error.message : 'unexpected Keychain error'
       process.stderr.write(`enterprise login preflight: ${detail}\n`)
     }

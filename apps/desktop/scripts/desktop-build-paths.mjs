@@ -1,6 +1,7 @@
 /** Resolve build-owned Desktop paths without sharing mutable state across release targets. */
 
 import { join, resolve } from 'node:path'
+import { LOCAL_ENTERPRISE_APP_ID } from './desktop-release-environment.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
@@ -39,15 +40,22 @@ function assertSupportedTarget(target) {
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
  * @param {'official' | 'enterprise'} edition - Packaged product edition.
+ * @param {string | undefined} companyAppId - Independent enterprise application identifier.
  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, packedEnterprise: string, downloads: string }} Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target, edition = 'official') {
+export function desktopTargetBuildPaths(target, edition = 'official', companyAppId = undefined) {
   assertSupportedTarget(target)
   if (edition !== 'official' && edition !== 'enterprise') {
     throw new Error(`desktop build paths: unsupported edition ${String(edition)}`)
   }
+  if (companyAppId !== undefined && (edition !== 'enterprise'
+    || !/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){2,}$/u.test(companyAppId))) {
+    throw new Error('desktop build paths: company app ID requires enterprise edition and a lowercase reverse-DNS identifier')
+  }
+  const enterpriseRoot = companyAppId === undefined || companyAppId === LOCAL_ENTERPRISE_APP_ID
+    ? join(BUILD_ROOT, 'enterprise') : join(BUILD_ROOT, 'enterprise', 'companies', companyAppId)
   const root = edition === 'enterprise'
-    ? join(BUILD_ROOT, 'enterprise', 'targets', target)
+    ? join(enterpriseRoot, 'targets', target)
     : join(BUILD_ROOT, 'targets', target)
   const packed = join(root, 'packed')
   return {
@@ -94,7 +102,8 @@ export function resolveDesktopTargetBuildPaths(
   hostArch = process.arch,
 ) {
   const edition = env.DSH_DESKTOP_ENTERPRISE_MODE === '1' ? 'enterprise' : 'official'
-  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), edition)
+  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), edition,
+    edition === 'enterprise' ? env.DSH_DESKTOP_APP_ID : undefined)
 }
 
 /**

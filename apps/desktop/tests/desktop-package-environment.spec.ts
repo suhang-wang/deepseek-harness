@@ -50,16 +50,18 @@ describe('Desktop local packaging configuration', () => {
     expect(() => validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, MACOS, { unsigned: true }))
       .toThrow(/enterprise app ID/u)
     expect(() => validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_APP_ID: 'org.example.harness' }, MACOS, { unsigned: true }))
-      .toThrow(/provisional enterprise app ID/u)
+      .toThrow(/custom enterprise app ID requires/u)
   })
 
   it('requires an explicit publisher-owned identifier and signing inputs for signed enterprise macOS', () => {
     const signed = { ...RELEASE, ...MAC_IDENTITY, DSH_DESKTOP_ENTERPRISE_MODE: '1' }
     expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, MACOS))
       .toThrow(/enterprise app ID/u)
-    expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness' }, MACOS))
+    expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness' }, MACOS))
       .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
     expect(() => validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
       DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }, MACOS))
       .toThrow(/macOS packaging requires/u)
   })

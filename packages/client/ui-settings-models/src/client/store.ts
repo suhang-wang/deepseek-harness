@@ -90,6 +90,11 @@ export interface ProviderRow {
    * own derivation rule.
    */
   derivedCredential?: CredentialInfo
+  /** Current employee-visible models for a provider configured outside local settings. */
+  managedCatalog?: Readonly<{
+    status: 'loading' | 'ready' | 'error'
+    models: readonly Readonly<{ id: string; name: string }>[]
+  }>
 }
 
 /** Page snapshot. */
@@ -160,6 +165,8 @@ export class ModelsSettingsStore {
 
   /** Latest load wins; an older response never overwrites a newer one. */
   private generation = 0
+  /** The first view uses the initial load; later views refresh company policy. */
+  private managedCatalogShown = false
   /** Callers follow the current refresh's outcome, including callers whose read was superseded. */
   private readonly pendingLoads = new Set<PromiseWithResolvers<void>>()
 
@@ -174,6 +181,13 @@ export class ModelsSettingsStore {
     private readonly schema: SettingsSchemaOperations,
     private readonly describeFace: SettingsDescribeFace,
   ) {}
+
+  /** Return whether the managed model group was already shown in this session. */
+  markManagedCatalogShown(): boolean {
+    const previouslyShown = this.managedCatalogShown
+    this.managedCatalogShown = true
+    return previouslyShown
+  }
 
   /**
    * Refresh the whole page snapshot: the provider directory and the mirror's
@@ -198,7 +212,12 @@ export class ModelsSettingsStore {
 
   /** Publish one joined answer; stale answers leave the current refresh in charge. */
   private async read(generation: number): Promise<void> {
-    this.store.update((s) => { s.status = 'loading'; s.error = null })
+    this.store.update((s) => {
+      s.status = 'loading'
+      s.error = null
+      s.rows = s.rows.map(row => row.managedCatalog === undefined ? row
+        : { ...row, managedCatalog: { status: 'loading', models: [] } })
+    })
     const [registered, declared] = await Promise.all([
       this.ctx.remote.llm.listProviders(),
       this.ctx.remote.llm.listConfigurableProviders(),
@@ -232,14 +251,27 @@ export class ModelsSettingsStore {
         credential: undefined,
       }
     })
-    if (rows.some(row => row.entry.provider === 'deepseek-account')) {
-      const catalog = await this.ctx.remote.session.modelCatalog()
-      for (const row of rows) {
-        if (row.entry.provider === 'deepseek-account') row.accountAvailable = catalog.ok
-          && catalog.value.groups.some(group => group.id === 'deepseek-account' && group.models.length > 0)
+    const managed = (row: ProviderRow): boolean => row.entry.active && !row.configured
+      && row.entry.settingsNs.length > 0 && !namespaces.has(row.entry.settingsNs)
+    const needsCatalog = rows.some(row => row.entry.provider === 'deepseek-account' || managed(row))
+    const catalog = needsCatalog
+      ? await this.ctx.remote.session.modelCatalog().catch(() => undefined)
+      : undefined
+    if (generation !== this.generation) return
+    const catalogGroups = new Map(catalog?.ok ? catalog.value.groups.map(group => [group.id, group] as const) : [])
+    const catalogFailures = new Set(catalog?.ok ? catalog.value.failures?.map(failure => failure.id) : [])
+    const catalogRows = rows.map((row): ProviderRow => {
+      const provider = row.entry.provider
+      if (provider === 'deepseek-account') return {
+        ...row, accountAvailable: catalog?.ok === true && (catalogGroups.get(provider)?.models.length ?? 0) > 0,
       }
-    }
-    const refs = [...new Set(rows.filter(row => row.entry.provider !== 'deepseek-account').map(row => row.apiKeyEnv ?? deriveKeyRef(row.entry.provider)))]
+      if (!managed(row)) return row
+      const failed = catalog?.ok !== true || catalogFailures.has(provider)
+      return { ...row, managedCatalog: failed
+        ? { status: 'error', models: [] }
+        : { status: 'ready', models: (catalogGroups.get(provider)?.models ?? []).map(model => ({ id: model.id, name: model.name })) } }
+    })
+    const refs = [...new Set(catalogRows.filter(row => row.entry.provider !== 'deepseek-account').map(row => row.apiKeyEnv ?? deriveKeyRef(row.entry.provider)))]
     let credentials: Record<string, CredentialInfo> = {}
     let credentialError: string | null = null
     if (refs.length > 0) {
@@ -256,7 +288,7 @@ export class ModelsSettingsStore {
       s.error = null
       s.credentialError = credentialError
       s.writable = writable
-      s.rows = rows.filter(row => row.entry.provider !== 'deepseek-account' || row.accountAvailable === true).map((row) => {
+      s.rows = catalogRows.filter(row => row.entry.provider !== 'deepseek-account' || row.accountAvailable === true).map((row) => {
         if (row.entry.provider === 'deepseek-account') return row
         const named = row.apiKeyEnv === undefined ? undefined : credentials[row.apiKeyEnv]
         const derived = row.apiKeyEnv !== undefined ? undefined : credentials[deriveKeyRef(row.entry.provider)]

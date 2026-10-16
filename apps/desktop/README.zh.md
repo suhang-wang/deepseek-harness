@@ -272,6 +272,10 @@ pnpm run package:desktop:mac:arm64:unsigned -- --dir --enterprise-packages ../de
 
 该命令构建企业工作区，打包身份、模型提供方、界面及组合包四个包，并将组合包依赖闭包纳入 Desktop 包集合。它把 HTTPS 服务地址封入打包运行时描述文件，解包应用位于 `apps/desktop/.desktop-build/enterprise/targets/mac-arm64/unsigned-artifacts/mac-arm64/DeepSeek Harness Enterprise.app`；准备文件留在同一企业目标目录。未签名企业包使用临时应用 ID `com.deepseek.harness.enterprise.local`、产品名 `DeepSeek Harness Enterprise`、`dsh-enterprise` URL 协议和独立产物名称。打包清单写入 `dshDesktopEdition=enterprise`。服务地址必须是无凭据、路径、查询和片段的规范 HTTPS origin。本地 Host 冒烟使用合成配置和服务，不能证明真实企业微信登录。
 
+为每家公司单独制作客户端时，复制 [enterprise-profile.example.json](enterprise-profile.example.json) 到私有的非密钥配置文件，填写 `appId`、`productName`、`protocolScheme` 和 `serviceOrigin`。在 macOS arm64 或 Windows x64 打包命令中，保留 `--enterprise-packages`，用 `--enterprise-profile path/to/company.json` 代替 `--enterprise-service-origin`；路径相对于本仓库根目录解析。同一电脑上共存的客户端须使用不同的应用 ID、名称和协议名；配置文件决定安装包注册的应用唤起 URL 协议与独立产物文件名。自定义客户端的准备文件和产物位于 `.desktop-build/enterprise/companies/<appId>/targets/<target>/`，构建第二家公司时不会覆盖第一家公司的包。不同应用 ID 也分别使用独立的本地数据目录和加密会话文件。自定义应用 ID 的签名包也必须使用独立名称和协议。自定义应用 ID 的更新目录按 `dsh-enterprise/<appId>/...` 隔离，即使共用更新域名也不会覆盖；旧临时客户端保留原更新路径。企业微信登录的 HTTPS 回调须分别在各公司后台配置。服务地址仍固定在打包运行时中。企业微信和模型密钥只保存在各公司的服务端。不传配置文件的旧命令继续使用临时标识。
+
+未签名的 Windows x64 企业安装包使用相同的企业组合包选择参数，须在 Windows x64 构建主机上运行。它读取 `.env.windows`，其中的临时应用 ID 可由公司配置文件覆盖；与 macOS 未签名路径不同，它仍要求所选的强制更新源。安装包输出到 `apps/desktop/.desktop-build/enterprise/targets/win-x64/unsigned-artifacts`。企业微信二维码登录尝试开始前，刷新与退出凭据经 Electron safeStorage 使用 Windows DPAPI 加密；访问令牌只留在 Host 内存。DPAPI 防止其他 Windows 用户读取，但不隔离同一用户下的任意进程。手动 `windows-enterprise-package.yml` 流程可读取私有企业仓库中的配置文件并生成未签名开发安装包，不代表已完成签名后的员工发行资格。
+
 企业欢迎窗展示企业微信登录二维码，并自动查询同一次授权尝试；流程及浏览器备用入口见[认证设计](../../docs/enterprise/technical-design.zh.md#authentication)。
 
 签名的 macOS arm64 企业包沿用两个企业参数，但不加 `--unsigned`。它从 `.env.macos` 读取企业发行方拥有的显式反向域名 `DSH_DESKTOP_APP_ID`、Developer ID 签名、公证凭据和 `DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN`。签名构建拒绝普通版 `com.deepseek.harness` 命名空间及临时企业 ID。它要求显式企业 HTTPS 更新源，使用 `dsh-enterprise/` 路径而非普通版的 `dsh-desk/`，并拒绝 `download.deepseek.com`。发行前须核实标识和更新源所有权；构建只能校验格式和隔离，不能证明域名所有权。企业更新发布和版本窗口资格验证由后续更新 Feature 完成。真实企业微信登录仍需可信回调域名及获批的企业微信凭据。

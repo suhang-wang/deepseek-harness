@@ -73,13 +73,13 @@ All cases below start as not executed. When implementing, record run ID, exact v
 
 | Case / requirement | Priority | Precondition and action | Expected result | Level |
 | --- | --- | --- | --- | --- |
-| G01 / PR-05 | P0 | Run real profile against scripted Messages text stream. | Incremental display and durable final response match provider content. | C/R/D |
+| G01 / PR-05 | P0 | Run the real profile against scripted DeepSeek Messages and qualified compatible Chat Completions text streams. | Incremental display and durable final response match each provider's content. | C/R/D |
 | G02 / PR-05 | P0 | Emit split tool JSON, perform a safe temp-file tool, then continue. | Tool runs once; externally verify file; next model call uses tool result. | C/R |
 | G03 / PR-05 | P0 | Stream thinking/signatures and tool changes; resume session. | Replay preserves protocol data without duplicated content/tools. | C/R |
-| G04 / PR-05,06 | P0 | Split SSE frames arbitrarily; emit ping and cumulative usage updates. | Correct parse/relay; output usage is not summed twice. | I/C |
-| G05 / PR-05,12 | P0 | Return non-2xx before headers and an error after partial output. | Correct protocol failure; no JSON appended to SSE and no gateway replay. | I/C |
-| G06 / PR-05,08 | P0 | Submit arbitrary path/URL, redirect, unauthorized beta, or oversized body. | Reject safely; corporate key never reaches an unapproved origin. | I |
-| G07 / PR-05,06 | P0 | Trigger title, compaction, retry, and subagent model calls. | Every dispatched model attempt passes policy and quota admission. | C |
+| G04 / PR-05,06 | P0 | Split DeepSeek SSE frames arbitrarily; for the qualified compatible route split `delta.tool_calls`, terminal `choices=[]` usage, and `[DONE]`; omit or duplicate terminal usage. | Correct parse/relay; output usage is not summed twice, and missing or duplicate compatible usage is not settled as zero. | I/C |
+| G05 / PR-05,12 | P0 | On each enterprise route, return non-2xx before headers and an error after partial output. | Correct protocol failure; no JSON appended to SSE and no gateway replay. | I/C |
+| G06 / PR-05,08 | P0 | Submit arbitrary path/URL, redirect, private DNS result, unauthorized beta, unqualified compatible model, unsupported media, or oversized body. | Reject safely; corporate keys never reach an unapproved origin. | I |
+| G07 / PR-05,06 | P0 | Trigger title, compaction, retry, and subagent model calls on both enterprise provider routes. | Every dispatched model attempt passes policy and quota admission. | C |
 | F01 / PR-05,08 | P0 | A uploads; B lists, retrieves, deletes, or references A file ID. | B sees no file, foreign ID is rejected before upstream/model call. | I/R |
 | F02 / PR-08 | P0 | A cache cleanup requests dsh-prefixed files owned by B. | Filtered listing and server ownership prevent deletion. | I/C |
 | F03 / PR-05,08 | P0 | Test ownership-filtered pagination and foreign IDs in historical Messages. | All and only owned files appear; every reference is checked. | I |
@@ -92,16 +92,16 @@ All cases below start as not executed. When implementing, record run ID, exact v
 
 | Case / requirement | Priority | Precondition and action | Expected result | Level |
 | --- | --- | --- | --- | --- |
-| Q01 / PR-06 | P0 | Request at, below, and above available output quota. | Correct admission; excessive reservation rejected before dispatch. | U/I |
+| Q01 / PR-06 | P0 | Request at, below, and above available output quota through both enterprise routes. | Correct admission; excessive reservation rejected before dispatch. | U/I |
 | Q02 / PR-06 | P0 | Race 100 admissions from multiple employees through two backend instances against low shared budgets. | No company/employee/department bucket overspends; reservations commit or roll back together. | I |
 | Q03 / PR-06 | P0 | With sufficient quota, start a third call; terminate one operation without final usage and retry. | Third is initially limited; concurrency slot recovers while uncertain budget reservation remains held. | I/C |
 | Q04 / PR-06 | P0 | Deliver valid terminal usage twice or race reconciliation. | One debit and one release per request; immutable ledger evidence. | I |
-| Q05 / PR-06,12 | P0 | Cancel/disconnect after dispatch without final usage, then reconcile. | Attempt upstream abort; keep uncertain reservation; sanitized alert raises and clears on reconciliation. | I/C |
+| Q05 / PR-06,12 | P0 | Cancel/disconnect after dispatch without final usage on either enterprise route, then reconcile. | Attempt upstream abort; keep uncertain reservation; sanitized alert raises and clears on reconciliation. | I/C |
 | Q06 / PR-06,12 | P0 | Crash before dispatch, in dispatch window, and after terminal receipt. | Provably unsent work releases; ambiguous work stays uncertain; settlement is unique. | I |
 | Q07 / PR-06 | P0 | Advance uncertain request past 24 hours, then provide trusted actual usage. | Explicit estimated debit then one audited delta adjustment, no duplicate refund. | U/I |
 | Q08 / PR-06 | P0 | Retry same idempotency key with same/different body after dispatch. | No second execution; changed body gets 409. | I |
 | Q09 / PR-06 | P0 | Cross month/change price/transfer during a stream; lower budget below settled plus reserved. | Request snapshots remain fixed, new periods initialize atomically, invalid reduction returns 409. | U/I |
-| Q10 / PR-05,06 | P0 | With real model, exercise output cap including reasoning and image input. | Observed output stays within reservation; unsupported bounds block model enablement. | R |
+| Q10 / PR-05,06 | P0 | With the real DeepSeek model, exercise output cap including reasoning and image input; separately probe a qualified compatible text/tool model with a small `max_tokens` limit and terminal usage. | Observed output stays within reservation; unsupported media or bounds block compatible model enablement. | R |
 | Q11 / PR-06,12 | P0 | Remove price/cache data; lose and restore the database during admission. | Cost unavailable/estimated; DB failure dispatches nothing, raises a sanitized alert, and recovery clears it. | I |
 | Q12 / PR-05,06 | P0 | End Messages with absent/noninteger/negative/decreasing/over-reservation output usage. | No invented zero settlement; request becomes uncertain, bound violation disables model, incident evidence retained. | I/C |
 
@@ -113,9 +113,9 @@ All cases below start as not executed. When implementing, record run ID, exact v
 | S01 / PR-09 | P0 | Bound in-scope employee scans and enters generated setup code; race submissions, expire/regenerate/reuse code, scan and call admin endpoints as another employee, then lose all owners. | No admin session before code succeeds; one owner grant and one consumed code; invalid, expired, duplicate and mismatched attempts fail; ordinary employees are denied and initialization never reopens because owner count becomes zero. | I/R |
 | S02 / PR-08,09 | P0 | Owner grants, updates and revokes administrator/owner roles with revisions; try to remove the last owner; admin edits policy/quota; owner rotates provider key. | Stale grants return 409, last owner remains, changed sessions revoke immediately, non-owners cannot grant/rotate; audited changes omit secrets/content, key reads never reveal plaintext, new calls use new key and active calls retain pinned version. | I/R |
 | S03 / PR-08,09,12 | P0 | Attempt admin CSRF, injection, hostile error text, setup-code brute force and replay, restore backup, and run explicit owner recovery. | Writes protected, SQL parameterized, UI safe, persistent attempt limits enforced; recovery requires operator reason and audit, never a public reset; old sessions fail after restore. | I/D |
-| S04 / PR-08 | P0 | Capture model-related metadata and conversation-content egress during a task. | Necessary content goes only to approved inference; no optional official log/analytics upload; authorized login/update/tool traffic remains allowed. | C/D |
+| S04 / PR-08 | P0 | Capture company-model metadata and conversation-content egress during a task. | Company route content goes only to approved inference; no optional official log/analytics upload; authorized login/update/tool traffic remains allowed. Employee-owned routes are assessed separately. | C/D |
 | D01 / PR-10 | P0 | Install signed/notarized enterprise app beside personal app. | Correct identity and independent userData/home; no credential or session auto-import. | D |
-| D02 / PR-01,08,10,11 | P0 | Boot packaged app with enterprise bundle and disabled personal routes; sign in as A and try to request B's profile. | Real Loader boots enterprise login/provider/UI without official account fallback; desktop shows only A's ID, department paths, cost department, effective models and quota. | C/D |
+| D02 / PR-01,08,10,11 | P0 | Boot packaged app with enterprise bundle; sign in as A and try to request B's profile. | Real Loader boots enterprise login/provider/UI without official account fallback; Enterprise Account shows only A's company, ID, department paths and cost department; Models shows the company provider as a read-only group containing A’s available model names. | C/D |
 | D03 / PR-10,11 | P0 | Update from company feed; try official/wrong/unsigned artifacts. | Qualified enterprise update works; invalid identity/signature/channel rejected. | D |
 | D04 / PR-11 | P0 | Install an unapproved Host plugin, then run an incompatible plugin/API pair and outdated desktop. | Enterprise profile refuses unapproved Host code before activation; clear upgrade action; server refuses unsupported protocol; no compatibility bypass. | C/D |
 | D05 / PR-11 | P0 | Upgrade existing sessions and restart older app on newer schema. | Forward migration preserves history; unsupported downgrade refuses safely. | C/D |
@@ -123,11 +123,12 @@ All cases below start as not executed. When implementing, record run ID, exact v
 | D07 / PR-12 | P1 | Run 40 streams and simulate slow consumer/upstream. | Measure admission/relay targets, bounded buffers, cancellation, and alerts. | I/D |
 | D08 / PR-11 | P0 | Qualify an upstream update with login, tools, Files, and saved sessions. | Pinned combination passes critical regression; artifacts record exact versions. | C/R/D |
 | D09 / PR-08,10 | P0 | Sign out A and sign in B under the same OS account. | Host restarts into B data space; no A history, credentials, or upload cache is reused by the UI. | C/D |
+| D10 / PR-04,08,10 | P0 | Add, edit and remove an employee-owned provider beside the company row; publish a qualified compatible model, then change its endpoint/key revision; try to edit the company row or reuse its ID; switch employees. | Personal settings and credentials remain editable in the original Models page; the company group lists each qualified, permitted model name and removes a stale qualification, with no policy/quota detail, editor, or key field; distinct picker routes keep company calls in the gateway and personal calls outside company quota; no previous employee data remains after switching. | U/C/D |
 
 <a id="release"></a>
 ## Release acceptance
 
-The matrix has 61 cases: 57 P0 and four P1. Every PR-01 through PR-12 has coverage. First implement unit and database invariants, then real-profile cases and a pilot-company walkthrough. Require at least 80 percent backend line and branch coverage; changed Harness package code follows the repository per-file coverage policy.
+The matrix has 62 cases: 58 P0 and four P1. Every PR-01 through PR-12 has coverage. First implement unit and database invariants, then real-profile cases and a pilot-company walkthrough. Require at least 80 percent backend line and branch coverage; changed Harness package code follows the repository per-file coverage policy.
 
 Release requires all P0 cases and the product performance targets to pass, no unresolved critical/high security defects, and evidence from real WeCom and actual company DeepSeek Messages/Files credentials. A skipped external test is unverified. Record quotas and measured upstream cost for paid runs before execution approval.
 

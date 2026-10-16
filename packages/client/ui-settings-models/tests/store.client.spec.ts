@@ -85,6 +85,7 @@ const NAMESPACES = [
 function api(overrides: {
   accountAvailable?: boolean
   providers?: () => Promise<RpcResponse<{ providers: typeof DIRECTORY }>>
+  catalog?: () => Promise<RemoteAnswer<{ groups: readonly { id: string; models: readonly { id: string; name?: string }[] }[]; failures?: readonly { id: string }[] }>>
   describeSettings?: () => Promise<RemoteAnswer<{ writable: boolean; hasDocument: boolean; namespaces: typeof NAMESPACES }>>
   describeCredentials?: (refs: readonly string[]) => Promise<RemoteAnswer<Record<string, unknown>>>
 } = {}) {
@@ -108,8 +109,8 @@ function api(overrides: {
       : remoteFail(response.result.error.message)
   }
   const face = {
-    session: { modelCatalog: async () => remoteOk({ groups: overrides.accountAvailable
-      ? [{ id: 'deepseek-account', models: [{ id: 'deepseek-flash' }] }] : [] }) },
+    session: { modelCatalog: overrides.catalog ?? (async () => remoteOk({ groups: overrides.accountAvailable
+      ? [{ id: 'deepseek-account', models: [{ id: 'deepseek-flash' }] }] : [] })) },
     llm: {
       listProviders: () => mapProviderBatch(rows => rows
         .filter(row => row.active)
@@ -141,6 +142,39 @@ function api(overrides: {
 }
 
 describe('ModelsSettingsStore', () => {
+  it('refreshes only the current employee-visible models for a managed provider', async () => {
+    const providers = [...DIRECTORY, {
+      provider: 'deepseek-enterprise', displayName: 'DeepSeek Enterprise',
+      settingsNs: 'enterprise-provider', settingsPath: [], active: true,
+    }]
+    let catalogRead = 0
+    const { ctx, mirror } = api({
+      providers: () => Promise.resolve(ok({ providers })),
+      catalog: async () => {
+        catalogRead += 1
+        if (catalogRead === 3) return remoteFail('private upstream error')
+        if (catalogRead === 4) throw new Error('transport offline')
+        return remoteOk({ groups: [{ id: 'deepseek-enterprise', models: catalogRead === 1
+          ? [{ id: 'flash', name: 'Flash' }, { id: 'pro', name: 'Pro' }]
+          : [{ id: 'flash', name: 'Flash' }] }] })
+      },
+    })
+    const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)
+    const managed = () => store.store.getSnapshot().rows.find(row => row.entry.provider === 'deepseek-enterprise')
+
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'ready', models: [
+      { id: 'flash', name: 'Flash' }, { id: 'pro', name: 'Pro' },
+    ] })
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'ready', models: [{ id: 'flash', name: 'Flash' }] })
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'error', models: [] })
+    expect(store.store.getSnapshot().status).toBe('ready')
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'error', models: [] })
+  })
+
   it('joins rows with configured, removable, and credential state', async () => {
     const { ctx, mirror, seenRefs } = api()
     const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)

@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   resolveDesktopPackageIdentity,
+  LOCAL_ENTERPRISE_APP_ID,
   resolveMacOSNotarizationEnvironment,
   resolveMacOSSigningEnvironment,
 } from './desktop-release-environment.mjs'
@@ -101,8 +102,12 @@ export function createElectronBuilderConfig(
     appId,
     protocols: [{ name: identity.productName, schemes: [identity.protocolScheme] }],
     extraMetadata: {
+      // electron-builder derives updater/NSIS cache directories from package name, not appId.
+      ...(identity.edition === 'enterprise' && appId !== LOCAL_ENTERPRISE_APP_ID
+        ? { name: `dsh-enterprise-${appId}` } : {}),
       dshDesktopAppId: appId,
       dshDesktopEdition: identity.edition,
+      ...(identity.edition === 'enterprise' ? { dshDesktopExternalScheme: identity.protocolScheme } : {}),
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },

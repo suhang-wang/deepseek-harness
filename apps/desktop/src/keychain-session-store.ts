@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 export type DesktopSessionSecretKey = 'refresh' | 'logout-capability' | 'employee-id' | 'company-id' | 'revocation-queue'
 
-/** Electron safeStorage operations backed by macOS Keychain for the packaged Desktop process. */
+/** Electron safeStorage operations backed by macOS Keychain or Windows DPAPI. */
 export interface KeychainEncryption {
   isAsyncEncryptionAvailable(): Promise<boolean>
   encryptStringAsync(value: string): Promise<Buffer>
@@ -44,7 +44,7 @@ export class KeychainSessionStore {
     this.filename = join(userData, SESSION_FILE)
   }
 
-  /** Exercise Keychain encryption before redeeming a one-time browser login. */
+  /** Exercise the OS-backed encryptor before redeeming a one-time browser login. */
   probeWritable(): Promise<void> {
     return this.serial(async () => {
       await this.readRecords()
@@ -58,7 +58,7 @@ export class KeychainSessionStore {
         await rename(temporary, renamed)
         const stored = await readFile(renamed, 'utf8')
         const decrypted = await this.keychainOperation(() => this.encryption.decryptStringAsync(Buffer.from(stored, 'base64')))
-        if (decrypted.result !== canary) throw new Error('Keychain encryption is unavailable.')
+        if (decrypted.result !== canary) throw new Error(this.unavailableMessage())
       } finally {
         await Promise.all([rm(temporary, { force: true }), rm(renamed, { force: true })])
       }
@@ -68,7 +68,7 @@ export class KeychainSessionStore {
   /**
    * @param key - identity field to read.
    * @returns the stored field or null.
-   * @throws when macOS Keychain access or stored ciphertext is unavailable.
+   * @throws when OS credential encryption or stored ciphertext is unavailable.
    */
   get(key: DesktopSessionSecretKey): Promise<string | null> {
     return this.serial(async () => (await this.readRecords())[key] ?? null)
@@ -176,8 +176,16 @@ export class KeychainSessionStore {
   }
 
   private async assertAvailable(): Promise<void> {
-    if (this.platform !== 'darwin') throw new Error('Enterprise credentials require the macOS Keychain.')
-    if (!await this.keychainOperation(() => this.encryption.isAsyncEncryptionAvailable())) throw new Error('Keychain encryption is unavailable.')
+    if (this.platform !== 'darwin' && this.platform !== 'win32') {
+      throw new Error('Enterprise credentials require the macOS Keychain or Windows DPAPI.')
+    }
+    if (!await this.keychainOperation(() => this.encryption.isAsyncEncryptionAvailable())) {
+      throw new Error(this.unavailableMessage())
+    }
+  }
+
+  private unavailableMessage(): string {
+    return this.platform === 'win32' ? 'Windows secure storage encryption is unavailable.' : 'Keychain encryption is unavailable.'
   }
 
   private async keychainOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -186,7 +194,8 @@ export class KeychainSessionStore {
       return await Promise.race([
         Promise.resolve().then(operation),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => { reject(new Error('Keychain operation timed out.')) }, this.operationTimeoutMs)
+          timer = setTimeout(() => { reject(new Error(this.platform === 'win32'
+            ? 'Windows secure storage operation timed out.' : 'Keychain operation timed out.')) }, this.operationTimeoutMs)
         }),
       ])
     } finally {

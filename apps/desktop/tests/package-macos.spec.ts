@@ -30,18 +30,19 @@ function barrier() {
 async function fixture(arch: 'arm64' | 'x64' = 'arm64', enterprise = false) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-parallel-notarization-'))
   const artifactsRoot = join(root, 'artifacts')
-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', enterprise ? 'DeepSeek Harness Enterprise.app' : 'DeepSeek Harness.app')
+  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', enterprise ? 'Example Harness.app' : 'DeepSeek Harness.app')
   await mkdir(join(appPath, 'Contents', 'Resources'), { recursive: true })
   await writeFile(join(appPath, 'payload'), 'signed content')
   await writeMacOSAppUpdateConfig(join(appPath, 'Contents', 'Resources'), {
     publicUrl: enterprise
-      ? `https://enterprise-updates.example.com/dsh-enterprise/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`
+      ? `https://enterprise-updates.example.com/dsh-enterprise/org.example.harness/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`
       : `https://desktop-updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`,
   }, 'deepseek-harness-updater')
   const version = '1.2.3-alpha.1'
-  const base = `deepseek-harness${enterprise ? '-enterprise' : ''}-${version}-mac-${arch}`
+  const base = `deepseek-harness${enterprise ? '-enterprise-org.example.harness' : ''}-${version}-mac-${arch}`
   const request = { arch, artifactsRoot, version, environment: enterprise ? {
     ...environment, DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_APP_ID: 'org.example.harness',
+    DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
     DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com',
   } : environment }
   const apple: MacOSArtifactOperations = {

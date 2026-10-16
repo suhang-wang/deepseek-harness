@@ -134,7 +134,7 @@ it('packs four adjacent enterprise packages and seals the approved origin only f
     DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://127.0.0.1:3443',
   })
   expect(enterprisePack[3].cwd).toContain('enterprise-package-input')
-  expect(enterprisePack[0]).toContain('enterprise/targets/mac-arm64/packed/enterprise')
+  expect(enterprisePack[0]).toContain('enterprise/companies/com.example.test/targets/mac-arm64/packed/enterprise')
   const dshPreparation = run.run.mock.calls.find(call => call[0] === 'run prepare:dsh')!
   expect(dshPreparation[3].env).toMatchObject({ DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://127.0.0.1:3443' })
   expect(run.run.mock.calls.find(call => call[0] === 'run prepare:packages')![3].env).toHaveProperty('DSH_DESKTOP_ENTERPRISE_MODE', '1')
@@ -147,10 +147,11 @@ it('uses the renamed enterprise App for a signed directory package', async () =>
     'mac-arm64', '--dir', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
     '--enterprise-service-origin', 'https://api.example.test',
   ], 'darwin', 'arm64'), { ...environment, DSH_DESKTOP_APP_ID: 'org.example.harness',
+    DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
     APPLE_KEYCHAIN_PROFILE: 'fixture-profile', DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }, run)
   expect(stages).toContain('run build')
   expect(notarizeMacOS).toHaveBeenCalledWith(expect.objectContaining({
-    appPath: expect.stringContaining('/enterprise/targets/mac-arm64/artifacts/mac-arm64/DeepSeek Harness Enterprise.app'),
+    appPath: expect.stringContaining('/enterprise/companies/org.example.harness/targets/mac-arm64/artifacts/mac-arm64/Example Harness.app'),
   }))
   expect(packageMacOSArtifacts).not.toHaveBeenCalled()
 })

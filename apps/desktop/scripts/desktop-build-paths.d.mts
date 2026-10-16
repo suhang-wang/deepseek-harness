@@ -34,9 +34,10 @@ export function resolveDesktopBuildTarget(
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param target - Supported Desktop target name.
  * @param edition - Packaged product edition.
+ * @param companyAppId - Independent enterprise application identifier.
  * @returns Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, edition?: 'official' | 'enterprise'): DesktopTargetBuildPaths
+export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, edition?: 'official' | 'enterprise', companyAppId?: string): DesktopTargetBuildPaths
 
 /**
  * Return the platform and architecture of the payload one release target prepares.

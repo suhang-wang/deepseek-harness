@@ -38,10 +38,22 @@ describe('manual Windows package inputs', () => {
     expect(() => { validateDesktopPackageEnvironment(parseEnv(result.settings), { platform: 'win32', arch: 'x64' }, { unsigned: true }) }).not.toThrow()
   })
 
+  it('selects the provisional enterprise app ID without adding release-only settings', () => {
+    const result = windowsCiSettings({ ...inputs, PACKAGE_EDITION: 'enterprise' }, productVersion, now)
+    expect(result.edition).toBe('enterprise')
+    const settings = parseEnv(result.settings)
+    expect(settings.DSH_DESKTOP_APP_ID).toBe('com.deepseek.harness.enterprise.local')
+    expect(Object.keys(settings).sort()).toEqual([
+      'DSH_DESKTOP_APP_ID', 'DSH_DESKTOP_AUTO_UPDATE_ENV',
+      'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN', 'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG',
+    ].sort())
+  })
+
   it.each([
     { PACKAGE_BUILD_VERSION: '' },
     { PACKAGE_BUILD_VERSION: '0.3.0' },
     { PACKAGE_DEPLOYMENT: 'staging' },
+    { PACKAGE_EDITION: 'staging' },
     { PACKAGE_POLICY_ORIGIN: '' },
     { PACKAGE_POLICY_ORIGIN: 'http://policy.example.com' },
     { PACKAGE_POLICY_ORIGIN: 'https://policy.example.com/path' },

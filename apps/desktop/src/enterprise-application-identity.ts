@@ -8,6 +8,7 @@ import { canonicalEnterpriseServiceOrigin } from './runtime-tree.ts'
 const BUNDLE = '@dsh-enterprise/harness-bundle'
 const IDENTITY = '@dsh-enterprise/harness-identity'
 const APP_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){2,}$/u
+const EXTERNAL_SCHEME = /^[a-z][a-z0-9-]{2,63}$/u
 const PERSONAL_IDS = new Set(['com.deepseek.harness', 'com.deepseek.dsh'])
 
 interface RuntimeIdentity {
@@ -28,7 +29,7 @@ interface OfficialIdentity {
 
 interface EnterpriseIdentity {
   readonly edition: 'enterprise'
-  readonly externalScheme: 'dsh-enterprise'
+  readonly externalScheme: string
   readonly appId: string
   readonly userData: string
   readonly sessionData: string
@@ -68,6 +69,13 @@ export function resolveDesktopApplicationIdentity(
   if (typeof appId !== 'string' || !APP_ID.test(appId) || PERSONAL_IDS.has(appId)) {
     throw new Error('desktop edition: enterprise package requires an independent reverse-DNS app ID')
   }
+  const externalScheme = manifest.dshDesktopExternalScheme
+    ?? (appId === 'com.deepseek.harness.enterprise.local' ? 'dsh-enterprise' : undefined)
+  if (typeof externalScheme !== 'string' || !EXTERNAL_SCHEME.test(externalScheme)
+    || ['dsh', 'dsh-app', 'http', 'https', 'file', 'mailto'].includes(externalScheme)
+    || (appId !== 'com.deepseek.harness.enterprise.local' && externalScheme === 'dsh-enterprise')) {
+    throw new Error('desktop edition: enterprise package requires a distinct external URL scheme')
+  }
   const shared = new Set(runtime.sharedPackages?.map(packageRecord => packageRecord.name))
   const allowed = new Set(runtime.allowedHostPlugins?.map(packageRecord => packageRecord.name))
   if (!shared.has(BUNDLE) || !shared.has(IDENTITY) || !allowed.has(BUNDLE) || !allowed.has(IDENTITY)
@@ -77,7 +85,7 @@ export function resolveDesktopApplicationIdentity(
   if (!isAbsolute(appData)) throw new Error('desktop edition: Electron appData path must be absolute')
   const userData = join(appData, appId)
   return Object.freeze({
-    edition: 'enterprise', externalScheme: 'dsh-enterprise', appId, userData,
+    edition: 'enterprise', externalScheme, appId, userData,
     sessionData: join(userData, 'session'),
     bootstrapHome: resolveEnterpriseDataSpace(userData, null).home,
   })

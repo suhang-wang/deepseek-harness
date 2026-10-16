@@ -30,6 +30,8 @@ const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 const ENTERPRISE_PACKAGE_NAMES = [
   'harness-identity', 'harness-provider', 'harness-ui', 'harness-bundle',
 ] as const
+/** Release targets the enterprise package set can be bound to; mac-x64 has no enterprise release. */
+const ENTERPRISE_PACKAGE_TARGETS = new Set<DesktopPackageTargetName>(['mac-arm64', 'win-x64'])
 const WINDOWS_SIGNING_ENV_PREFIX = 'DSH_DESKTOP_WINDOWS_'
 const WINDOWS_SIGNING_ENV_NAMES = [
   'DSH_DESKTOP_WINDOWS_CER_FILE',
@@ -202,7 +204,13 @@ interface DesktopPackageInvocation {
   readonly check: boolean
   /** Build identifier to publish under, when this build does not publish the product version. */
   readonly requestedBuildVersion: string | undefined
-  readonly enterprise: { readonly packagesRoot: string; readonly serviceOrigin: string } | undefined
+  readonly enterprise: {
+    readonly packagesRoot: string
+    readonly serviceOrigin: string
+    readonly appId?: string
+    readonly protocolScheme?: string
+    readonly productName?: string
+  } | undefined
 }
 
 function enterpriseServiceOrigin(value: string): string {
@@ -213,6 +221,42 @@ function enterpriseServiceOrigin(value: string): string {
     throw new Error('desktop package: --enterprise-service-origin requires a canonical HTTPS origin')
   }
   return value
+}
+
+interface EnterprisePackageProfile {
+  readonly appId: string
+  readonly protocolScheme: string
+  readonly productName: string
+  readonly serviceOrigin: string
+}
+
+function readEnterprisePackageProfile(path: string): EnterprisePackageProfile {
+  let parsed: unknown
+  try {
+    const contents = readFileSync(resolve(REPOSITORY_ROOT, path), 'utf8')
+    if (Buffer.byteLength(contents, 'utf8') > 8_192) throw new Error('oversized profile')
+    parsed = JSON.parse(contents)
+  } catch { throw new Error('desktop package: enterprise profile must be a readable JSON file under 8 KiB') }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('desktop package: enterprise profile must be a JSON object')
+  }
+  const fields = parsed as Record<string, unknown>
+  if (Object.keys(fields).sort().join(',') !== 'appId,productName,protocolScheme,serviceOrigin'
+    || Object.values(fields).some(value => typeof value !== 'string' || value.length === 0)) {
+    throw new Error('desktop package: enterprise profile requires only appId, productName, protocolScheme and serviceOrigin')
+  }
+  resolveDesktopPackageIdentity({
+    DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_UNSIGNED: '1',
+    DSH_DESKTOP_APP_ID: fields.appId as string,
+    DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: fields.protocolScheme as string,
+    DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: fields.productName as string,
+  })
+  return {
+    appId: fields.appId as string,
+    productName: fields.productName as string,
+    protocolScheme: fields.protocolScheme as string,
+    serviceOrigin: enterpriseServiceOrigin(fields.serviceOrigin as string),
+  }
 }
 
 function enterprisePackageRoot(value: string): string {
@@ -260,6 +304,7 @@ export function parseDesktopPackageInvocation(
       'build-version': { type: 'string' },
       'enterprise-packages': { type: 'string' },
       'enterprise-service-origin': { type: 'string' },
+      'enterprise-profile': { type: 'string' },
     },
   })
   if (positionals.length > 1) throw new Error('desktop package: expected at most one target')
@@ -269,18 +314,24 @@ export function parseDesktopPackageInvocation(
   if (values['build-version'] !== undefined && (requestedBuildVersion === undefined || requestedBuildVersion === '')) {
     throw new Error('desktop package: --build-version requires a value')
   }
-  const enterpriseRequested = values['enterprise-packages'] !== undefined || values['enterprise-service-origin'] !== undefined
+  const profilePath = values['enterprise-profile']
+  if (profilePath !== undefined && values['enterprise-service-origin'] !== undefined) {
+    throw new Error('desktop package: --enterprise-profile and --enterprise-service-origin cannot be combined')
+  }
+  const profile = profilePath === undefined ? undefined : readEnterprisePackageProfile(profilePath)
+  const enterpriseRequested = values['enterprise-packages'] !== undefined || values['enterprise-service-origin'] !== undefined || profile !== undefined
   if (enterpriseRequested && !values['enterprise-packages']?.trim()) {
     throw new Error('desktop package: --enterprise-packages is required with --enterprise-service-origin')
   }
-  if (enterpriseRequested && !values['enterprise-service-origin']?.trim()) {
-    throw new Error('desktop package: --enterprise-service-origin is required with --enterprise-packages')
+  if (enterpriseRequested && profile === undefined && !values['enterprise-service-origin']?.trim()) {
+    throw new Error('desktop package: --enterprise-service-origin or --enterprise-profile is required with --enterprise-packages')
   }
-  if (enterpriseRequested && name !== 'mac-arm64') {
-    throw new Error('desktop package: enterprise packaging currently supports mac-arm64 only')
+  const target = resolveDesktopPackageTarget(name, hostPlatform, hostArch)
+  if (enterpriseRequested && !ENTERPRISE_PACKAGE_TARGETS.has(target.name)) {
+    throw new Error(`desktop package: enterprise packaging supports ${[...ENTERPRISE_PACKAGE_TARGETS].join(' and ')} only`)
   }
   return {
-    target: resolveDesktopPackageTarget(name, hostPlatform, hostArch),
+    target,
     directory: values.dir,
     prepareOnly: values['prepare-only'],
     unsigned: values.unsigned,
@@ -288,7 +339,10 @@ export function parseDesktopPackageInvocation(
     requestedBuildVersion,
     enterprise: enterpriseRequested ? {
       packagesRoot: enterprisePackageRoot(values['enterprise-packages']!),
-      serviceOrigin: enterpriseServiceOrigin(values['enterprise-service-origin']!),
+      serviceOrigin: profile?.serviceOrigin ?? enterpriseServiceOrigin(values['enterprise-service-origin']!),
+      ...(profile === undefined ? {} : {
+        appId: profile.appId, protocolScheme: profile.protocolScheme, productName: profile.productName,
+      }),
     } : undefined,
   }
 }
@@ -364,7 +418,8 @@ async function resolveRequestedBuildVersion(
   const requested = invocation.requestedBuildVersion
   if (requested === undefined) return productVersion
   if (requested !== AUTOMATIC_BUILD_VERSION) return validateDesktopBuildVersion(requested, productVersion)
-  const paths = desktopTargetBuildPaths(invocation.target.name, invocation.enterprise === undefined ? 'official' : 'enterprise')
+  const paths = desktopTargetBuildPaths(invocation.target.name, invocation.enterprise === undefined ? 'official' : 'enterprise',
+    invocation.enterprise === undefined ? undefined : environment.DSH_DESKTOP_APP_ID)
   return suggestDesktopBuildVersion({
     productVersion, target: invocation.target.name, environment,
     // Unsigned builds land beside the signed output, so numbering has to read the directory this run writes.
@@ -384,6 +439,11 @@ async function main(): Promise<void> {
   if (invocation.enterprise !== undefined) {
     environment.DSH_DESKTOP_ENTERPRISE_MODE = '1'
     environment.DSH_ENTERPRISE_SERVICE_ORIGIN = invocation.enterprise.serviceOrigin
+    if (invocation.enterprise.appId !== undefined) environment.DSH_DESKTOP_APP_ID = invocation.enterprise.appId
+    if (invocation.enterprise.protocolScheme !== undefined) {
+      environment.DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME = invocation.enterprise.protocolScheme
+    }
+    if (invocation.enterprise.productName !== undefined) environment.DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME = invocation.enterprise.productName
   }
   const identity = resolveDesktopPackageIdentity({ ...environment, DSH_DESKTOP_UNSIGNED: invocation.unsigned ? '1' : '0' })
   const productVersion = packageVersion(join(APP_ROOT, 'package.json'), 'desktop package')
@@ -437,7 +497,8 @@ async function main(): Promise<void> {
     run.finish(success)
   }
   if (success && target.platform === 'darwin' && !invocation.directory && !invocation.prepareOnly) {
-    const paths = desktopTargetBuildPaths(target.name, invocation.enterprise === undefined ? 'official' : 'enterprise')
+    const paths = desktopTargetBuildPaths(target.name, invocation.enterprise === undefined ? 'official' : 'enterprise',
+      invocation.enterprise === undefined ? undefined : environment.DSH_DESKTOP_APP_ID)
     const filename = `${identity.artifactPrefix}-${buildVersion}-mac-${target.arch}${invocation.unsigned ? '-unsigned' : ''}.dmg`
     console.log(`DMG: ${join(invocation.unsigned ? paths.unsignedArtifacts : paths.artifacts, filename)}`)
   }
@@ -461,7 +522,8 @@ export async function packageTarget(
   const proxyEvent = (status: string) => { if (journal) recordPackagingEvent(journal, { type: 'notarization-proxy', status }) }
   const mac = target.platform === 'darwin' ? resolveMacOSPackageSettings(environment) : undefined
   const packArguments = mac === undefined ? [] : ['--concurrency', String(mac.packConcurrency)]
-  const buildPaths = desktopTargetBuildPaths(target.name, invocation.enterprise === undefined ? 'official' : 'enterprise')
+  const buildPaths = desktopTargetBuildPaths(target.name, invocation.enterprise === undefined ? 'official' : 'enterprise',
+    invocation.enterprise === undefined ? undefined : environment.DSH_DESKTOP_APP_ID)
   const releaseRecordPath = join(buildPaths.artifacts, desktopBuildRecordFilename(target.name))
   if (!invocation.prepareOnly && !invocation.unsigned) {
     rmSync(releaseRecordPath, { force: true })

@@ -34,12 +34,13 @@ describe('desktop macOS release signature', () => {
   it('seals a signed enterprise package to its separate feed and edition identity', async () => {
     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
     const env = { ...RELEASE_ENVIRONMENT, DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
       DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }
     const config = createElectronBuilderConfig(env, 'darwin', 'arm64')
-    expect(config).toMatchObject({ appId: 'org.example.harness', productName: 'DeepSeek Harness Enterprise',
-      artifactName: 'deepseek-harness-enterprise-${version}-${os}-${arch}.${ext}',
+    expect(config).toMatchObject({ appId: 'org.example.harness', productName: 'Example Harness',
+      artifactName: 'deepseek-harness-enterprise-org.example.harness-${version}-${os}-${arch}.${ext}',
       extraMetadata: { dshDesktopEdition: 'enterprise', dshDesktopAppId: 'org.example.harness' },
-      publish: [{ url: `https://enterprise-updates.example.com/dsh-enterprise/${RELEASE_ENVIRONMENT.DOWNLOAD_TEST_RELEASE_ID}/feeds/mac-arm64/` }] })
+      publish: [{ url: `https://enterprise-updates.example.com/dsh-enterprise/org.example.harness/${RELEASE_ENVIRONMENT.DOWNLOAD_TEST_RELEASE_ID}/feeds/mac-arm64/` }] })
   })
   beforeAll(() => {
     for (const [name, value] of Object.entries(RELEASE_ENVIRONMENT)) vi.stubEnv(name, value)

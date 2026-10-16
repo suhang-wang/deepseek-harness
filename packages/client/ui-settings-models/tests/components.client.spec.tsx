@@ -241,7 +241,10 @@ function ctxWith(face: object): PageContext {
   const existing = contexts.get(face)
   if (existing !== undefined) return existing
   const ctx = Object.assign(new Context(), { remote: { ...face,
-    session: { initializeDefaultModel: async () => ({ ok: true, value: undefined }) },
+    session: {
+      initializeDefaultModel: async () => ({ ok: true, value: undefined }),
+      modelCatalog: async () => remoteOk({ groups: [] }),
+    },
   } })
   contexts.set(face, ctx)
   return ctx
@@ -299,7 +302,7 @@ async function mountFace(scripted: ReturnType<typeof scriptedFace>) {
     renderSlot: renderSlot as unknown as ModelsSectionProps['renderSlot'],
   }
   const view = render(<ModelsSection {...injected} />)
-  return { view, ctx, face, update, mutate, set, unset, controller, mirror, renderSlot }
+  return { view, injected, ctx, face, update, mutate, set, unset, controller, mirror, renderSlot }
 }
 
 async function mountSection(overrides: Parameters<typeof scriptedFace>[0] = {}) {
@@ -630,6 +633,61 @@ describe('ModelsSection', () => {
     expect(renderSlot.mock.calls.filter(call => call[0] === 'settings.models.footer')).toEqual([
       ['settings.models.footer', {}],
     ])
+  })
+
+  it('shows the available company models under a read-only provider heading', async () => {
+    const scripted = scriptedFace()
+    const catalog = vi.spyOn(ctxWith(scripted.face).remote.session, 'modelCatalog').mockResolvedValue(remoteOk({
+      default: { provider: 'deepseek-enterprise', model: 'deepseek-flash' },
+      routableProviders: ['deepseek-enterprise', 'deepseek-official'],
+      groups: [
+        { id: 'deepseek-enterprise', name: 'DeepSeek Enterprise', models: [
+          { id: 'deepseek-flash', name: 'DeepSeek Flash' },
+          { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+        ] },
+        { id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'personal', name: 'Personal Model' }] },
+      ],
+      failures: [],
+    }))
+    scripted.face.llm.listProviders.mockResolvedValue(remoteOk([
+      { id: 'deepseek-enterprise', name: 'DeepSeek Enterprise' },
+      { id: 'deepseek-official', name: 'DeepSeek' },
+      { id: 'openai', name: 'openai' },
+    ]))
+    scripted.face.llm.listConfigurableProviders.mockResolvedValue(remoteOk([
+      { provider: 'deepseek-enterprise', displayName: 'DeepSeek Enterprise', settingsNs: 'enterprise-provider', settingsPath: [] },
+      { provider: 'deepseek-official', displayName: 'DeepSeek', settingsNs: 'llm-deepseek', settingsPath: [] },
+      { provider: 'openai', displayName: 'openai', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'openai'] },
+    ]))
+    const { view, injected, renderSlot, controller } = await mountFace(scripted)
+    const managed = screen.getByText('DeepSeek Enterprise').closest('li')!
+    expect(within(managed).getByText('DeepSeek Flash')).toBeTruthy()
+    expect(within(managed).getByText('DeepSeek V4 Pro')).toBeTruthy()
+    expect(managed.textContent).not.toContain('Personal Model')
+    expect(managed.getAttribute('aria-label')).toContain(en.managedTag)
+    expect(within(managed).queryByRole('button', { name: /Edit|Delete/u })).toBeNull()
+    expect(within(managed).queryByLabelText(en.keyInput)).toBeNull()
+    expect(cardSeatCalls(renderSlot)).not.toContainEqual(['deepseek-enterprise', false, false, 'enterprise-provider'])
+    expect(screen.getByRole('button', { name: deepSeekCopy(en.editProvider) })).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.add })).toBeTruthy()
+
+    catalog.mockResolvedValue(remoteFail('private upstream failure'))
+    await act(async () => { await controller.load() })
+    expect(within(managed).queryByText('DeepSeek Flash')).toBeNull()
+    expect(within(managed).getByText(en.managedModelsUnavailable)).toBeTruthy()
+
+    view.unmount()
+    catalog.mockResolvedValue(remoteOk({
+      default: { provider: 'deepseek-enterprise', model: 'deepseek-v4-pro' },
+      routableProviders: ['deepseek-enterprise'],
+      groups: [{ id: 'deepseek-enterprise', name: 'DeepSeek Enterprise', models: [
+        { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+      ] }],
+      failures: [],
+    }))
+    render(<ModelsSection {...injected} />)
+    expect(await screen.findByText('DeepSeek V4 Pro')).toBeTruthy()
+    expect(screen.queryByText('DeepSeek Flash')).toBeNull()
   })
 
   it('dispatches the provider-card seat inside the first-run setup card', async () => {
