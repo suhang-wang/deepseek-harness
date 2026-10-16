@@ -1,6 +1,6 @@
 import { officePackageDirectories } from '../../../scripts/libreoffice-packages.mjs'
 import { X509Certificate } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,6 +67,28 @@ export function createElectronBuilderConfig(
   const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS && !unsigned) resolveMacOSNotarizationEnvironment(env)
   const buildPaths = resolveDesktopTargetBuildPaths(env, hostPlatform, hostArch)
+  // Windows enterprise builds place installer UI assets under a company-specific build root.
+  // Generate a per-target NSIS include wrapper that defines INSTALLER_BUILD_DIR so installer.nsh
+  // resolves the assets from the correct directory instead of the hardcoded non-enterprise path.
+  const nsisInclude = packagesWindows
+    ? (() => {
+        const buildDirDefinePath = join(buildPaths.root, 'installer-build-dir.nsh')
+        const includeWrapperPath = join(buildPaths.root, 'installer-include.nsh')
+        const installerNshPath = fileURLToPath(new URL('./installer.nsh', import.meta.url))
+        const toNsisPath = p => p.replace(/\\/g, '/')
+        mkdirSync(buildPaths.root, { recursive: true })
+        writeFileSync(buildDirDefinePath,
+          `; Auto-generated installer build directory define.\n` +
+          `!define INSTALLER_BUILD_DIR "${toNsisPath(join(buildPaths.root, 'installer-ui'))}"\n`,
+          'utf8')
+        writeFileSync(includeWrapperPath,
+          `; Auto-generated NSIS include wrapper.\n` +
+          `!include "${toNsisPath(buildDirDefinePath)}"\n` +
+          `!include "${toNsisPath(installerNshPath)}"\n`,
+          'utf8')
+        return includeWrapperPath
+      })()
+    : fileURLToPath(new URL('./installer.nsh', import.meta.url))
   let primaryRuntimeDestination
   let dshDestination
   let windowsCode = []
@@ -244,7 +266,7 @@ export function createElectronBuilderConfig(
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
       uninstallerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
-      include: fileURLToPath(new URL('./installer.nsh', import.meta.url)),
+      include: nsisInclude,
       oneClick: false,
       perMachine: false,
       allowElevation: false,
