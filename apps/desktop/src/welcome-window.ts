@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, ipcMain, session, type BrowserWindowConstructorOptions, type IpcMainInvokeEvent } from 'electron'
 import type { DesktopLocale } from './locale.ts'
-import { ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseWelcomeOperations, type WelcomeOperations } from './welcome-api.ts'
+import { ENTERPRISE_WELCOME_EVENT, ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseWelcomeOperations, type WelcomeOperations } from './welcome-api.ts'
 
 const ENTERPRISE_ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 
@@ -104,6 +104,12 @@ export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operati
   let transition: Promise<void> | undefined
   let expectedQrCallback: ReturnType<typeof qrCallback> | undefined
   let callbackForwarded = false
+  let confirmedForwarded = false
+  const notifyConfirmed = (): void => {
+    if (confirmedForwarded || window.isDestroyed()) return
+    confirmedForwarded = true
+    window.webContents.send(ENTERPRISE_WELCOME_EVENT.confirmed)
+  }
   const enterWorkspace = (state: Awaited<ReturnType<EnterpriseWelcomeOperations['read']>>): Promise<void> => {
     if (state.status !== 'signed-in') throw new Error('desktop enterprise welcome: unconfirmed identity state')
     transition ??= Promise.resolve().then(() => operations.onSignedIn(state))
@@ -130,11 +136,13 @@ export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operati
   ipcMain.handle(ENTERPRISE_WELCOME_IPC.begin, (event) => {
     assertSender(event)
     expectedQrCallback = undefined
+    confirmedForwarded = false
     return operations.beginLogin()
   })
   ipcMain.handle(ENTERPRISE_WELCOME_IPC.beginQr, async (event) => {
     assertSender(event)
     expectedQrCallback = undefined
+    confirmedForwarded = false
     const result = await operations.beginQrLogin()
     expectedQrCallback = qrCallback(result.qrUrl)
     callbackForwarded = false
@@ -158,11 +166,17 @@ export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operati
     const expected = expectedQrCallback
     if (!active || !expected || callbackForwarded || !matchingQrCallback(event.url, expected)) return
     callbackForwarded = true
+    notifyConfirmed()
     // WeCom redirects the embedded QR page through the top frame. Keep the
     // trusted local welcome page alive while completing the one-time callback.
     void fetch(event.url, { redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(10_000) })
       .then(response => { if (!response.ok) callbackForwarded = false })
       .catch(() => { callbackForwarded = false })
+  })
+  window.webContents.on('will-frame-navigate', (details) => {
+    const expected = expectedQrCallback
+    if (!active || !expected || details.isMainFrame || !matchingQrCallback(details.url, expected)) return
+    notifyConfirmed()
   })
   try {
     await window.loadFile(join(app.getAppPath(), 'renderer', 'enterprise-welcome.html'))

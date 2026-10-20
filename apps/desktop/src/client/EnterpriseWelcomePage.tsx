@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EnterpriseWelcomeApi } from '../welcome-api.ts'
 
-type Phase = 'loading' | 'opening' | 'pending' | 'denied' | 'expired' | 'ready' | 'error'
+type Phase = 'loading' | 'opening' | 'pending' | 'opening-workspace' | 'denied' | 'expired' | 'ready' | 'error'
 
 const copy = {
   'zh-CN': {
@@ -13,6 +13,7 @@ const copy = {
     browserPending: '请在浏览器完成企业微信登录，成功后将自动打开工作区。', retry: '重新登录',
     denied: '企业微信授权未完成，请重新登录。', expired: '登录已过期，请重新登录。',
     error: '暂时无法连接企业登录服务，请重试。', ready: '已登录，正在打开工作区…',
+    openingWorkspace: '正在打开应用…',
   },
   en: {
     title: 'DeepSeek Harness Enterprise', heading: 'Sign in with WeCom',
@@ -22,6 +23,7 @@ const copy = {
     browserPending: 'Complete WeCom sign-in in your browser. Your workspace will open automatically.', retry: 'Try signing in again',
     denied: 'WeCom authorization was not completed. Please try again.', expired: 'Sign-in expired. Please try again.',
     error: 'The enterprise sign-in service is unavailable. Please try again.', ready: 'Signed in. Opening your workspace…',
+    openingWorkspace: 'Opening your workspace…',
   },
 } as const
 
@@ -71,15 +73,24 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
   }
 
   useEffect(() => {
+    if (phase !== 'pending') return
+    return api.onConfirmed(() => { setPhase('opening-workspace') })
+  }, [api, phase])
+
+  const polling = phase === 'pending' || phase === 'opening-workspace'
+
+  useEffect(() => {
     const id = attempt.current
-    if (phase !== 'pending' || id === null) return
+    if (!polling || id === null) return
     const current = revision.current
     let stopped = false
+    let failures = 0
     let timer: ReturnType<typeof setTimeout>
     const poll = async () => {
       try {
         const result = await api.finishLogin(id)
         if (stopped || !mounted.current || revision.current !== current) return
+        failures = 0
         if (result.status === 'pending') timer = setTimeout(() => { void poll() }, 2_500)
         else {
           attempt.current = null
@@ -87,17 +98,21 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
           setPhase(result.status === 'signed-in' ? 'ready' : result.status)
         }
       } catch {
-        if (!stopped && mounted.current && revision.current === current) setPhase('error')
+        if (stopped || !mounted.current || revision.current !== current) return
+        failures += 1
+        if (failures < 5) { timer = setTimeout(() => { void poll() }, 2_500); return }
+        setPhase('error')
       }
     }
     timer = setTimeout(() => { void poll() }, 2_500)
     return () => { stopped = true; clearTimeout(timer) }
-  }, [api, phase])
+  }, [api, polling])
 
   const isPending = phase === 'pending'
-  const isBusy = phase === 'loading' || phase === 'opening'
+  const isBusy = phase === 'loading' || phase === 'opening' || phase === 'opening-workspace'
   const status = phase === 'opening' ? m.opening : phase === 'pending' ? m.pending
-    : phase === 'denied' ? m.denied : phase === 'expired' ? m.expired : phase === 'ready' ? m.ready
+    : phase === 'opening-workspace' ? m.openingWorkspace
+      : phase === 'denied' ? m.denied : phase === 'expired' ? m.expired : phase === 'ready' ? m.ready
         : phase === 'error' ? m.error : ''
 
   return <>

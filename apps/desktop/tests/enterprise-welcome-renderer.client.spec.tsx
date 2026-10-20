@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, act } from '@testing-library/react'
 import { EnterpriseWelcomePage } from '../src/client/EnterpriseWelcomePage.tsx'
 import { resolveDesktopLocale } from '../src/locale.ts'
 import type { EnterpriseLoginResult } from '../src/welcome-api.ts'
@@ -10,12 +10,18 @@ const signedIn = { status: 'signed-in' as const, companyId: 'company', employeeI
 const attemptId = 'c1caeac9-5ea9-45b3-805e-12a2e6d08287'
 
 function mount(language = 'zh-CN') {
+  let confirmed: (() => void) | undefined
   const api = {
     ...resolveDesktopLocale(language), mode: 'enterprise' as const,
     read: vi.fn(async () => signedOut as typeof signedOut | typeof signedIn),
     beginLogin: vi.fn(async () => ({ attemptId })),
     beginQrLogin: vi.fn(async () => ({ attemptId, qrUrl: 'https://open.work.weixin.qq.com/wwopen/sso/qrConnect?state=test' })),
     finishLogin: vi.fn<(_id: string) => Promise<EnterpriseLoginResult>>(async () => ({ status: 'pending' })),
+    onConfirmed: vi.fn((listener: () => void) => {
+      confirmed = listener
+      return () => { confirmed = undefined }
+    }),
+    confirm: () => { confirmed?.() },
   }
   render(<EnterpriseWelcomePage api={api} />)
   return api
@@ -38,6 +44,23 @@ describe('enterprise welcome renderer', () => {
     expect(document.querySelector('iframe')).toBeNull()
   })
 
+  it('shows an opening state after the QR callback is confirmed', async () => {
+    const api = mount()
+    await screen.findByTitle('请使用企业微信扫码登录')
+    await vi.waitFor(() => { expect(api.onConfirmed).toHaveBeenCalledOnce() })
+    act(() => { api.confirm() })
+    expect(await screen.findAllByText('正在打开应用…')).not.toHaveLength(0)
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+
+  it('retries transient finish failures before showing the error state', async () => {
+    const api = mount()
+    await screen.findByTitle('请使用企业微信扫码登录')
+    api.finishLogin.mockRejectedValueOnce(new Error('transient')).mockResolvedValueOnce({ status: 'signed-in' })
+    expect(await screen.findByText('已登录，正在打开工作区…', {}, { timeout: 7_000 })).toBeDefined()
+    expect(screen.queryByText('暂时无法连接企业登录服务，请重试。')).toBeNull()
+  }, 10_000)
+
   it('polls and shows readiness after a confirmed sign-in', async () => {
     const api = mount()
     await screen.findByTitle('请使用企业微信扫码登录')
@@ -54,6 +77,7 @@ describe('enterprise welcome renderer', () => {
       beginLogin: vi.fn(async () => ({ attemptId })),
       beginQrLogin: vi.fn(async () => ({ attemptId, qrUrl: 'https://open.work.weixin.qq.com/wwopen/sso/qrConnect?state=test' })),
       finishLogin: vi.fn(async () => ({ status: 'pending' as const })),
+      onConfirmed: vi.fn(() => () => {}),
     }
     render(<EnterpriseWelcomePage api={api} />)
     expect(await screen.findByText('The enterprise sign-in service is unavailable. Please try again.')).toBeDefined()

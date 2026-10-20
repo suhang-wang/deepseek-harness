@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveDesktopLocale } from '../src/locale.ts'
-import { ENTERPRISE_WELCOME_IPC } from '../src/welcome-api.ts'
+import { ENTERPRISE_WELCOME_EVENT, ENTERPRISE_WELCOME_IPC } from '../src/welcome-api.ts'
 
 const electron = vi.hoisted(() => ({
   create: vi.fn<(options: unknown) => ReturnType<typeof createWindow>>(),
@@ -28,7 +28,8 @@ function createWindow() {
     webContents: {
       mainFrame: {},
       setWindowOpenHandler: vi.fn(),
-      on: vi.fn<(name: string, handler: (event: { preventDefault(): void }) => void) => void>(),
+      send: vi.fn(),
+      on: vi.fn<(name: string, handler: (event: { preventDefault(): void; url?: string; isMainFrame?: boolean }) => void) => void>(),
     },
     loadFile: vi.fn().mockResolvedValue(undefined),
     isDestroyed: vi.fn().mockReturnValue(false),
@@ -70,6 +71,28 @@ describe('enterprise welcome window', () => {
     window.webContents.on.mock.calls[0]![1](event)
     expect(event.preventDefault).toHaveBeenCalledOnce()
     expect([...electron.handlers.keys()].sort()).toEqual(Object.values(ENTERPRISE_WELCOME_IPC).sort())
+  })
+
+  it('notifies the renderer when the embedded QR flow reaches its callback', async () => {
+    const window = createWindow()
+    electron.create.mockReturnValue(window)
+    const state = 'A'.repeat(43)
+    const callback = 'https://enterprise.example.test/api/enterprise/v1/auth/wecom/callback'
+    const qrUrl = `https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid=ww123&agentid=1000002&redirect_uri=${encodeURIComponent(callback)}&state=${state}&self_redirect=true`
+    await openEnterpriseWelcomeWindow(resolveDesktopLocale('en'), {
+      read: async () => signedOut,
+      beginLogin: async () => ({ attemptId }),
+      beginQrLogin: async () => ({ attemptId, qrUrl }),
+      finishLogin: async () => ({ status: 'pending' }),
+      onSignedIn: vi.fn(),
+    })
+    const own = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    await electron.handlers.get(ENTERPRISE_WELCOME_IPC.beginQr)!(own)
+    const navigate = window.webContents.on.mock.calls
+      .find(call => call[0] === 'will-frame-navigate')![1]
+    navigate({ preventDefault: vi.fn(), url: `${callback}?code=code&state=${state}&appid=ww123`, isMainFrame: false })
+    navigate({ preventDefault: vi.fn(), url: `${callback}?code=code&state=${state}&appid=ww123`, isMainFrame: false })
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(ENTERPRISE_WELCOME_EVENT.confirmed)
   })
 
   it('rejects another sender, an invalid attempt, and only enters workspace after a verified signed-in state', async () => {

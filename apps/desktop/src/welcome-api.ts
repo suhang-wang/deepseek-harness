@@ -26,6 +26,11 @@ export const ENTERPRISE_WELCOME_IPC = {
   finish: 'dsh-enterprise-welcome:finish',
 } as const
 
+/** Main-to-renderer enterprise welcome notifications. */
+export const ENTERPRISE_WELCOME_EVENT = {
+  confirmed: 'dsh-enterprise-welcome:confirmed',
+} as const
+
 export type EnterpriseLoginResult = { readonly status: 'signed-in' | 'pending' | 'denied' | 'expired' }
 
 /** The native window receives only public identity state and an opaque attempt ID. */
@@ -35,6 +40,8 @@ export interface EnterpriseWelcomeApi extends DesktopLocale {
   beginLogin(): Promise<{ readonly attemptId: string }>
   beginQrLogin(): Promise<{ readonly attemptId: string; readonly qrUrl: string }>
   finishLogin(attemptId: string): Promise<EnterpriseLoginResult>
+  /** Notify that the QR flow reached its authorization callback and is being completed. */
+  onConfirmed(listener: () => void): () => void
 }
 
 /** Main-owned operations; onSignedIn transitions to the enterprise workspace. */

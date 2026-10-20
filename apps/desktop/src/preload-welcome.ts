@@ -3,7 +3,7 @@ import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-acc
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { resolveDesktopLocale } from './locale.ts'
-import { ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseLoginResult, type EnterpriseWelcomeApi, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
+import { ENTERPRISE_WELCOME_EVENT, ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseLoginResult, type EnterpriseWelcomeApi, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
 import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 
 const prefix = '--dsh-welcome-locale='
@@ -18,6 +18,11 @@ if (mode === 'enterprise') {
     beginLogin: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.begin) as Promise<{ readonly attemptId: string }>,
     beginQrLogin: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.beginQr) as Promise<{ readonly attemptId: string; readonly qrUrl: string }>,
     finishLogin: (attemptId: string) => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.finish, attemptId) as Promise<EnterpriseLoginResult>,
+    onConfirmed: (listener) => {
+      const receive = (): void => { listener() }
+      ipcRenderer.on(ENTERPRISE_WELCOME_EVENT.confirmed, receive)
+      return () => { ipcRenderer.removeListener(ENTERPRISE_WELCOME_EVENT.confirmed, receive) }
+    },
   }
   contextBridge.exposeInMainWorld('dshEnterpriseWelcome', enterpriseApi)
 } else {
