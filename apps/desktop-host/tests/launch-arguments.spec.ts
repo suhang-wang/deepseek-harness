@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { readDesktopHostLaunchArguments } from '../src/launch-arguments.ts'
 
@@ -19,6 +22,23 @@ it('reads package-manager paths before a Host plugin allowlist', () => {
     packageManager: { pnpm: '/pnpm.mjs', nodeBin: '/node-bin' },
     hostPluginAllowlist: { plugins: [bundle], packages: [bundle], enterpriseServiceOrigin: 'https://enterprise.example.test' },
   })
+})
+
+it('keeps a file-based Host plugin allowlist separate from paths', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-launch-arguments-test-'))
+  try {
+    const file = join(directory, 'allowlist.json')
+    writeFileSync(file, JSON.stringify({
+      plugins: [bundle], packages: [bundle], enterpriseServiceOrigin: 'https://enterprise.example.test',
+    }))
+    expect(readDesktopHostLaunchArguments(['/runtime', '/profile', '/primary', `--dsh-host-plugin-allowlist-file=${file}`]))
+      .toEqual({
+        runtimeDir: '/runtime', projectDir: '/profile', primaryRuntime: '/primary',
+        hostPluginAllowlist: { plugins: [bundle], packages: [bundle], enterpriseServiceOrigin: 'https://enterprise.example.test' },
+      })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 it('retains ordinary Host arguments and rejects a half-configured package manager', () => {

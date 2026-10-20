@@ -12,8 +12,11 @@ const ENTERPRISE_IDENTITY_ALLOWLIST = Object.freeze([{
 
 const HTTP_HOST = `
 import { createServer } from 'node:http'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+const allowlistArgument = process.argv.find(argument => argument.startsWith('--dsh-host-plugin-allowlist-file='))
+const allowlistFile = allowlistArgument === undefined ? null : allowlistArgument.slice('--dsh-host-plugin-allowlist-file='.length)
+const allowlist = allowlistFile === null ? null : readFileSync(allowlistFile, 'utf8')
 const server = createServer((request, response) => {
   if (request.url === '/fatal') {
     process.send({ type: 'fatal', message: 'plugin unavailable' })
@@ -26,8 +29,14 @@ const server = createServer((request, response) => {
     })
     return
   }
+  const result = {runtime: process.argv[2], profile: process.argv[3], cwd: process.cwd(), nodePath: process.env.NODE_PATH, registry: process.env.NPM_CONFIG_REGISTRY, nodeOptions: process.env.NODE_OPTIONS, runAsNode: process.env.ELECTRON_RUN_AS_NODE, internals: process.execArgv.includes('--expose-internals')}
+  if (allowlistFile !== null) Object.assign(result, {
+    allowlistFile, allowlist, allowlistBytes: Buffer.byteLength(allowlist ?? ''),
+    inlineAllowlist: process.argv.some(argument => argument.startsWith('--dsh-host-plugin-allowlist=')),
+    argvLength: process.argv.join(' ').length,
+  })
   response.setHeader('content-type', 'application/json')
-  response.end(JSON.stringify({runtime: process.argv[2], profile: process.argv[3], cwd: process.cwd(), nodePath: process.env.NODE_PATH, registry: process.env.NPM_CONFIG_REGISTRY, nodeOptions: process.env.NODE_OPTIONS, runAsNode: process.env.ELECTRON_RUN_AS_NODE, internals: process.execArgv.includes('--expose-internals')}))
+  response.end(JSON.stringify(result))
 })
 server.listen(0, '127.0.0.1', () => {
   process.send({ type: 'ready', url: 'http://127.0.0.1:' + server.address().port + '/?token=fixture' })
@@ -86,9 +95,9 @@ describe('desktop host process', () => {
     expect(host.diagnostic.endsWith('plugin load failed')).toBe(true)
   })
 
-  it('passes the sealed Host plugin list to the child without using environment overrides', async () => {
+  it('passes the sealed Host plugin list through a private launch file', async () => {
     const runtime = projectWithHost(HTTP_HOST.replace('nodePath: process.env.NODE_PATH',
-      "allowlist: process.argv.find(argument => argument.startsWith('--dsh-host-plugin-allowlist=')), enterpriseOrigin: process.env.DSH_ENTERPRISE_SERVICE_ORIGIN"))
+      'nodePath: process.env.NODE_PATH, enterpriseOrigin: process.env.DSH_ENTERPRISE_SERVICE_ORIGIN'))
     const allowed = Object.freeze(['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity'].map(name => Object.freeze({
       name, version: '1.0.0', path: join(runtime, 'node_modules', name),
     })))
@@ -99,11 +108,40 @@ describe('desktop host process', () => {
       undefined, 'https://enterprise.example.test')
     hosts.push(host)
     const { url } = await host.start()
-    const result = await (await fetch(url)).json() as { allowlist: string; enterpriseOrigin: string }
+    const result = await (await fetch(url)).json() as {
+      allowlist: string | null; allowlistFile: string | null; inlineAllowlist: boolean; enterpriseOrigin: string
+    }
     expect(result.enterpriseOrigin).toBe('https://enterprise.example.test')
-    expect(JSON.parse(result.allowlist.slice('--dsh-host-plugin-allowlist='.length))).toEqual({
+    expect(result.inlineAllowlist).toBe(false)
+    expect(result.allowlistFile).not.toBeNull()
+    expect(result.allowlistFile!.length).toBeLessThan(512)
+    expect(existsSync(result.allowlistFile!)).toBe(true)
+    expect(JSON.parse(result.allowlist!)).toEqual({
       plugins: [...allowed], packages: [...trusted], enterpriseServiceOrigin: 'https://enterprise.example.test',
     })
+    await host.stop()
+    expect(existsSync(result.allowlistFile!)).toBe(false)
+  })
+
+  it('keeps a large sealed Host plugin list out of the child command line', async () => {
+    const runtime = projectWithHost(HTTP_HOST.replace('nodePath: process.env.NODE_PATH',
+      'nodePath: process.env.NODE_PATH, enterpriseOrigin: process.env.DSH_ENTERPRISE_SERVICE_ORIGIN'))
+    const allowed = Object.freeze(Array.from({ length: 1_000 }, (_, index) => Object.freeze({
+      name: `@fixture/plugin-${String(index)}`,
+      version: '1.0.0',
+      path: join(runtime, 'node_modules', '@fixture', `plugin-${String(index)}`),
+    })))
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined,
+      process.env, undefined, undefined, undefined, undefined, undefined, undefined, allowed, allowed)
+    hosts.push(host)
+    const { url } = await host.start()
+    const result = await (await fetch(url)).json() as {
+      allowlist: string; allowlistBytes: number; inlineAllowlist: boolean; argvLength: number
+    }
+    expect(result.inlineAllowlist).toBe(false)
+    expect(result.allowlistBytes).toBeGreaterThan(32_767)
+    expect(result.argvLength).toBeLessThan(32_767)
+    expect(JSON.parse(result.allowlist).plugins).toHaveLength(1_000)
     await host.stop()
   })
 

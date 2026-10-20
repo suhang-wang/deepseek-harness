@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { readHostPluginAllowlist } from '../../desktop-host/src/host-plugin-allowlist.ts'
 
@@ -38,6 +41,43 @@ describe('desktop Host plugin allowlist argument', () => {
         plugins: [bundle], packages: [bundle], enterpriseServiceOrigin,
       })}`])).toThrow('enterprise service origin')
     }
+  })
+
+  it('reads the same policy from a launcher-owned file', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-host-allowlist-test-'))
+    try {
+      const file = join(directory, 'allowlist.json')
+      const bundle = { name: '@dsh-enterprise/harness-bundle', version: '1.0.0', path: '/runtime/bundle' }
+      const packages = [bundle, { name: 'debug', version: '4.4.3', path: '/runtime/node_modules/debug' }]
+      writeFileSync(file, JSON.stringify({
+        plugins: [bundle], packages, enterpriseServiceOrigin: 'https://enterprise.example.test',
+      }))
+      expect(readHostPluginAllowlist([`--dsh-host-plugin-allowlist-file=${file}`])).toEqual({
+        plugins: [bundle], packages, enterpriseServiceOrigin: 'https://enterprise.example.test',
+      })
+      expect(() => readHostPluginAllowlist([`--dsh-host-plugin-allowlist-file=${join(directory, 'missing.json')}`]))
+        .toThrow('invalid Host plugin allowlist')
+      expect(() => readHostPluginAllowlist(['--dsh-host-plugin-allowlist-file=relative.json']))
+        .toThrow('invalid Host plugin allowlist')
+      expect(() => readHostPluginAllowlist([
+        `--dsh-host-plugin-allowlist=${JSON.stringify({ plugins: [bundle], packages, enterpriseServiceOrigin: 'https://enterprise.example.test' })}`,
+        `--dsh-host-plugin-allowlist-file=${file}`,
+      ])).toThrow('duplicate Host plugin allowlist arguments')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts Windows absolute package paths', () => {
+    const bundle = {
+      name: '@dsh-enterprise/harness-bundle', version: '1.0.0',
+      path: 'C:\\runtime\\node_modules\\@dsh-enterprise\\harness-bundle',
+    }
+    const packages = [bundle, { name: 'debug', version: '4.4.3', path: 'C:\\runtime\\node_modules\\debug' }]
+    const result = readHostPluginAllowlist([`--dsh-host-plugin-allowlist=${JSON.stringify({
+      plugins: [bundle], packages, enterpriseServiceOrigin: 'https://enterprise.example.test',
+    })}`])
+    expect(result?.plugins).toEqual([bundle])
   })
 
   it('rejects duplicate launcher arguments', () => {

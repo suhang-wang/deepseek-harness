@@ -1,6 +1,6 @@
 /** Parse private Desktop-to-Host process arguments without mixing options and paths. */
 
-import { readHostPluginAllowlist, type HostPluginAllowlist } from './host-plugin-allowlist.ts'
+import { HOST_PLUGIN_ALLOWLIST_ARG_PREFIXES, readHostPluginAllowlist, type HostPluginAllowlist } from './host-plugin-allowlist.ts'
 
 /** Parsed arguments supplied by the native Desktop process. */
 export interface DesktopHostLaunchArguments {
@@ -11,8 +11,6 @@ export interface DesktopHostLaunchArguments {
   readonly hostPluginAllowlist?: HostPluginAllowlist
 }
 
-const HOST_PLUGIN_ALLOWLIST_PREFIX = '--dsh-host-plugin-allowlist='
-
 /**
  * Parse the three required paths, an optional pair of package-manager paths, and the optional Host policy.
  * @param argv - Arguments after the Host entrypoint.
@@ -20,7 +18,7 @@ const HOST_PLUGIN_ALLOWLIST_PREFIX = '--dsh-host-plugin-allowlist='
  */
 export function readDesktopHostLaunchArguments(argv: readonly string[]): DesktopHostLaunchArguments {
   const hostPluginAllowlist = readHostPluginAllowlist(argv)
-  const paths = argv.filter(argument => !argument.startsWith(HOST_PLUGIN_ALLOWLIST_PREFIX))
+  const paths = argv.filter(argument => !HOST_PLUGIN_ALLOWLIST_ARG_PREFIXES.some(prefix => argument.startsWith(prefix)))
   if ((paths.length !== 3 && paths.length !== 5)
     || paths.some(argument => argument.length === 0 || argument.startsWith('--'))) {
     throw new Error('desktop host: invalid launch arguments')

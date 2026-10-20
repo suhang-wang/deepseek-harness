@@ -1,6 +1,8 @@
 /** Electron Node-mode child lifecycle for the shared Web application. */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ActiveDesktopSession, DesktopSessionSecretKey } from './keychain-session-store.ts'
 import { enterpriseIdentityStatesEqual, parseEnterpriseIdentityState, type EnterpriseIdentityState } from './enterprise-identity-state.ts'
@@ -213,6 +215,7 @@ export class DesktopHostFatalError extends Error {
 /** One Web backend running under the Electron executable in Node mode. */
 export class DesktopHostProcess {
   private child: ChildProcess | undefined
+  private allowlistDir: string | undefined
   private readyResolve!: (ready: DesktopHostReady) => void
   private readyReject!: (error: Error) => void
   private readonly readyPromise = new Promise<DesktopHostReady>((resolve, reject) => {
@@ -282,24 +285,28 @@ export class DesktopHostProcess {
   async start(): Promise<DesktopHostReady> {
     if (this.child !== undefined) return this.readyPromise
     const entry = join(this.runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'index.js')
-    const child = spawn(this.node, [
-      '--expose-internals',
-      ...(this.inspectPort === undefined ? [] : [`--inspect=127.0.0.1:${String(this.inspectPort)}`]),
-      entry,
-      this.runtimeDir,
-      this.projectDir,
-      this.primaryRuntime ?? join(this.runtimeDir, '..', 'runtime', 'primary-runtime'),
-      ...this.packageManager === undefined ? [] : [this.packageManager.pnpm, this.packageManager.nodeBin],
-      ...(this.allowedHostPlugins === undefined ? [] : [`--dsh-host-plugin-allowlist=${JSON.stringify({
-        plugins: this.allowedHostPlugins, packages: this.trustedHostPackages,
-        ...(this.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: this.enterpriseServiceOrigin }),
-      })}`]),
-    ], {
-      cwd: this.projectDir,
-      env: desktopNodeEnvironment(this.node, undefined, this.enterpriseServiceOrigin === undefined ? this.environment
-        : { ...this.environment, DSH_ENTERPRISE_SERVICE_ORIGIN: this.enterpriseServiceOrigin }),
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    })
+    const allowlistFile = this.writeAllowlistFile()
+    let child: ChildProcess
+    try {
+      child = spawn(this.node, [
+        '--expose-internals',
+        ...(this.inspectPort === undefined ? [] : [`--inspect=127.0.0.1:${String(this.inspectPort)}`]),
+        entry,
+        this.runtimeDir,
+        this.projectDir,
+        this.primaryRuntime ?? join(this.runtimeDir, '..', 'runtime', 'primary-runtime'),
+        ...this.packageManager === undefined ? [] : [this.packageManager.pnpm, this.packageManager.nodeBin],
+        ...(allowlistFile === undefined ? [] : [`--dsh-host-plugin-allowlist-file=${allowlistFile}`]),
+      ], {
+        cwd: this.projectDir,
+        env: desktopNodeEnvironment(this.node, undefined, this.enterpriseServiceOrigin === undefined ? this.environment
+          : { ...this.environment, DSH_ENTERPRISE_SERVICE_ORIGIN: this.enterpriseServiceOrigin }),
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      })
+    } catch (error) {
+      this.cleanupAllowlistFile()
+      throw error
+    }
     this.child = child
     child.stderr?.setEncoding('utf8')
     child.stderr?.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-MAX_HOST_DIAGNOSTIC_CHARS) })
@@ -341,6 +348,38 @@ export class DesktopHostProcess {
       })
     })
     return this.readyPromise
+  }
+
+  /**
+   * Write the sealed Host policy to a private launch file. Windows caps a
+   * spawned command line at 32,767 characters, and the packaged enterprise
+   * allowlist is far larger.
+   * @returns the launch file path, or undefined when this launch has no policy.
+   */
+  private writeAllowlistFile(): string | undefined {
+    if (this.allowedHostPlugins === undefined) return undefined
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-host-allowlist-'))
+    const file = join(directory, 'allowlist.json')
+    try {
+      writeFileSync(file, JSON.stringify({
+        plugins: this.allowedHostPlugins, packages: this.trustedHostPackages,
+        ...(this.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: this.enterpriseServiceOrigin }),
+      }), { mode: 0o600 })
+    } catch (error) {
+      rmSync(directory, { recursive: true, force: true })
+      throw error
+    }
+    this.allowlistDir = directory
+    return file
+  }
+
+  /** Remove the launch file once the Host has read it or can no longer start. */
+  private cleanupAllowlistFile(): void {
+    const directory = this.allowlistDir
+    if (directory === undefined) return
+    this.allowlistDir = undefined
+    try { rmSync(directory, { recursive: true, force: true }) }
+    catch { /* a stale private launch file does not affect the sealed policy */ }
   }
 
   /**
@@ -410,6 +449,7 @@ export class DesktopHostProcess {
       }
     }
     this.child = undefined
+    this.cleanupAllowlistFile()
     if (requireGraceful && (!graceful || child.exitCode !== 0 || !this.shutdownCompleted)) {
       // This diagnostic reaches expandable UI; arbitrary plugin stderr can contain credentials.
       throw new DesktopHostUncleanExitError(`desktop update: Host did not complete graceful task teardown (exit ${String(child.exitCode)}, signal ${String(child.signalCode)}, shutdown acknowledged ${String(this.shutdownCompleted)}, graceful deadline exceeded ${String(!graceful)})`)
@@ -445,6 +485,7 @@ export class DesktopHostProcess {
   }
 
   private fail(error: Error): void {
+    this.cleanupAllowlistFile()
     this.onPlatformSession?.(null)
     this.readyReject(error)
     for (const request of this.controlRequests.values()) request.reject(error)
