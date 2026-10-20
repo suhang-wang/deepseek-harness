@@ -1,20 +1,8 @@
 /** Enterprise-only native welcome. No personal account, credential, or skip controls. */
 import { useEffect, useRef, useState } from 'react'
-import qrcode from 'qrcode-generator'
 import type { EnterpriseWelcomeApi } from '../welcome-api.ts'
 
 type Phase = 'loading' | 'opening' | 'pending' | 'denied' | 'expired' | 'ready' | 'error'
-
-/**
- * Render the provider URL locally. Loading the WeCom page in an iframe fails
- * behind a system proxy that Chromium cannot reach, even when the Host can.
- */
-function qrDataUrl(url: string): string {
-  const code = qrcode(0, 'M')
-  code.addData(url)
-  code.make()
-  return code.createDataURL(8, 4)
-}
 
 const copy = {
   'zh-CN': {
@@ -40,7 +28,7 @@ const copy = {
 export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcomeApi }) {
   const m = api.id === 'zh-CN' ? copy['zh-CN'] : copy.en
   const [phase, setPhase] = useState<Phase>('loading')
-  const [qrImage, setQrImage] = useState<string | null>(null)
+  const [qrUrl, setQrUrl] = useState<string | null>(null)
   const attempt = useRef<string | null>(null)
   const mounted = useRef(true)
   const busy = useRef(false)
@@ -66,7 +54,7 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
     if (busy.current) return
     busy.current = true
     attempt.current = null
-    setQrImage(null)
+    setQrUrl(null)
     const current = ++revision.current
     setPhase('opening')
     try {
@@ -74,7 +62,7 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
         ? await api.beginQrLogin() : await api.beginLogin()
       if (mounted.current && revision.current === current) {
         attempt.current = result.attemptId
-        setQrImage(result.qrUrl === undefined ? null : qrDataUrl(result.qrUrl))
+        setQrUrl(result.qrUrl ?? null)
         setPhase('pending')
       }
     } catch {
@@ -95,7 +83,7 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
         if (result.status === 'pending') timer = setTimeout(() => { void poll() }, 2_500)
         else {
           attempt.current = null
-          setQrImage(null)
+          setQrUrl(null)
           setPhase(result.status === 'signed-in' ? 'ready' : result.status)
         }
       } catch {
@@ -119,17 +107,18 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
       <section className="enterprise-welcome-content" aria-live="polite">
         <h1 id="enterprise-heading">{m.heading}</h1>
         <p>{phase === 'loading' ? m.description : status}</p>
-        {isPending && qrImage !== null && <div className="enterprise-login-qr-frame">
-          <img className="enterprise-login-qr" src={qrImage} alt={m.pending} />
+        {isPending && qrUrl !== null && <div className="enterprise-login-qr-frame">
+          <iframe className="enterprise-login-qr" title={m.pending} src={qrUrl}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-top-navigation" referrerPolicy="no-referrer" />
         </div>}
-        {isPending && <p className="enterprise-welcome-hint">{qrImage === null ? m.browserPending : m.pendingHint}</p>}
+        {isPending && <p className="enterprise-welcome-hint">{qrUrl === null ? m.browserPending : m.pendingHint}</p>}
       </section>
       <div className="actions enterprise-welcome-actions">
         {(phase === 'denied' || phase === 'expired' || phase === 'error') &&
           <button id="enterprise-start" className="primary" type="button" onClick={() => { void start('qr') }}>
             {m.retry}
           </button>}
-        {((isPending && qrImage !== null) || phase === 'error') &&
+        {((isPending && qrUrl !== null) || phase === 'error') &&
           <button id="enterprise-browser" className="secondary" type="button" onClick={() => { void start('browser') }}>{m.browser}</button>}
         {isBusy && <button className="primary" type="button" disabled aria-label={status || m.opening}>{status || m.opening}</button>}
       </div>

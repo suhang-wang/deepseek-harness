@@ -24,14 +24,13 @@ function mount(language = 'zh-CN') {
 afterEach(cleanup)
 
 describe('enterprise welcome renderer', () => {
-  it.each(['zh-CN', 'en'])('shows a locally rendered WeCom QR code and browser fallback in %s', async language => {
+  it.each(['zh-CN', 'en'])('shows an embedded WeCom QR code and browser fallback in %s', async language => {
     const api = mount(language)
-    const qr = await screen.findByAltText(language === 'zh-CN' ? '请使用企业微信扫码登录' : 'Scan with WeCom to sign in')
+    const qr = await screen.findByTitle(language === 'zh-CN' ? '请使用企业微信扫码登录' : 'Scan with WeCom to sign in')
     expect(document.documentElement.lang).toBe(language)
     expect(document.querySelector('input')).toBeNull()
     expect(document.body.textContent).not.toMatch(/API Key|密钥|Skip|跳过/u)
-    expect(qr.getAttribute('src')).toMatch(/^data:image\/gif;base64,/u)
-    expect(document.querySelector('iframe')).toBeNull()
+    expect(qr.getAttribute('src')).toContain('/wwopen/sso/qrConnect?state=test')
     expect(api.beginQrLogin).toHaveBeenCalledOnce()
     expect(api.beginLogin).not.toHaveBeenCalled()
     fireEvent.click(document.getElementById('enterprise-browser')!)
@@ -41,7 +40,7 @@ describe('enterprise welcome renderer', () => {
 
   it('polls and shows readiness after a confirmed sign-in', async () => {
     const api = mount()
-    await screen.findByAltText('请使用企业微信扫码登录')
+    await screen.findByTitle('请使用企业微信扫码登录')
     api.finishLogin.mockResolvedValueOnce({ status: 'signed-in' as const })
     expect(await screen.findByText('已登录，正在打开工作区…', {}, { timeout: 4_000 })).toBeDefined()
     expect(api.finishLogin).toHaveBeenCalledExactlyOnceWith(attemptId)

@@ -382,15 +382,14 @@ body {
   overflow: hidden;
   border-radius: 12px;
   background: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .enterprise-login-qr {
   display: block;
-  width: 260px;
-  height: 260px;
-  image-rendering: pixelated;
+  width: 400px;
+  height: 430px;
+  border: 0;
+  transform: scale(0.7);
+  transform-origin: top left;
   app-region: no-drag;
 }
