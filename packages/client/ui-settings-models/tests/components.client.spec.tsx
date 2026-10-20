@@ -244,7 +244,10 @@ function ctxWith(face: object): PageContext {
   const existing = contexts.get(face)
   if (existing !== undefined) return existing
   const ctx = Object.assign(new Context(), { remote: { ...face,
-    session: { initializeDefaultModel: async () => ({ ok: true, value: undefined }) },
+    session: {
+      initializeDefaultModel: async () => ({ ok: true, value: undefined }),
+      modelCatalog: async () => remoteOk({ groups: [], failures: [] }),
+    },
   } })
   contexts.set(face, ctx)
   return ctx
@@ -328,7 +331,7 @@ async function mountFace(scripted: ReturnType<typeof scriptedFace>) {
     renderSlot: renderSlot as unknown as ModelsSectionProps['renderSlot'],
   }
   const view = render(<ModelsSection {...injected} />)
-  return { view, ctx, face, update, mutate, set, unset, controller, mirror, renderSlot }
+  return { view, injected, ctx, face, update, mutate, set, unset, controller, mirror, renderSlot }
 }
 
 async function mountSection(overrides: Parameters<typeof scriptedFace>[0] = {}) {
@@ -659,6 +662,65 @@ describe('ModelsSection', () => {
     expect(within(card).getByRole('alert').textContent).toBe(failure)
     expect(within(card).getByLabelText(en.keyInput)).toBeTruthy()
     expect(within(card).queryByRole('button', { name: deepSeekCopy(en.editProvider) })).toBeNull()
+  })
+
+  it('shows the available company models under a read-only provider heading', async () => {
+    const scripted = scriptedFace()
+    const catalog = vi.spyOn(ctxWith(scripted.face).remote.session, 'modelCatalog').mockResolvedValue(remoteOk({
+      default: { provider: 'enterprise', model: 'qwen-local:Qwen3.8-27B' },
+      routableProviders: ['enterprise', 'deepseek-official'],
+      groups: [
+        { id: 'enterprise', name: '企业模型', models: [
+          { id: 'qwen-local:Qwen3.8-27B', name: '本地 Qwen · Qwen3.8-27B' },
+          { id: 'deepseek:deepseek-flash', name: 'DeepSeek · Flash' },
+        ] },
+        { id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'personal', name: 'Personal Model' }] },
+      ],
+      failures: [],
+    }))
+    scripted.face.llm.listProviders.mockResolvedValue(remoteOk([
+      { id: 'enterprise', name: '企业模型' },
+      { id: 'deepseek-official', name: 'DeepSeek' },
+      { id: 'openai', name: 'openai' },
+    ]))
+    scripted.face.llm.listConfigurableProviders.mockResolvedValue(remoteOk([
+      { provider: 'enterprise', displayName: '企业模型', settingsNs: 'enterprise-provider', settingsPath: [] },
+      { provider: 'deepseek-official', displayName: 'DeepSeek', settingsNs: 'llm-deepseek', settingsPath: [] },
+      { provider: 'openai', displayName: 'openai', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'openai'] },
+    ]))
+    const { view, injected, renderSlot, controller } = await mountFace(scripted)
+    await screen.findByText('本地 Qwen · Qwen3.8-27B')
+    const managed = screen.getByLabelText(`企业模型 · ${en.managedTag}`)
+    expect(within(managed).getByText('DeepSeek · Flash')).toBeTruthy()
+    expect(managed.textContent).not.toContain('Personal Model')
+    expect(managed.getAttribute('aria-label')).toContain(en.managedTag)
+    expect(within(managed).queryByRole('button', { name: /Edit|Delete/u })).toBeNull()
+    expect(within(managed).queryByLabelText(en.keyInput)).toBeNull()
+    expect(cardSeatCalls(renderSlot)).not.toContainEqual(['enterprise', false, false, 'enterprise-provider'])
+    expect(screen.getByRole('button', { name: deepSeekCopy(en.editProvider) })).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.add })).toBeTruthy()
+
+    const beforeFocus = catalog.mock.calls.length
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    await waitFor(() => { expect(catalog.mock.calls.length).toBe(beforeFocus + 1) })
+
+    catalog.mockResolvedValue(remoteFail('private upstream failure'))
+    await act(async () => { await controller.load() })
+    expect(within(managed).queryByText('本地 Qwen · Qwen3.8-27B')).toBeNull()
+    expect(within(managed).getByText(en.managedModelsUnavailable)).toBeTruthy()
+
+    view.unmount()
+    catalog.mockResolvedValue(remoteOk({
+      default: { provider: 'enterprise', model: 'qwen-local:Qwen3.8-27B' },
+      routableProviders: ['enterprise'],
+      groups: [{ id: 'enterprise', name: '企业模型', models: [
+        { id: 'qwen-local:Qwen3.8-27B', name: '本地 Qwen · Qwen3.8-27B' },
+      ] }],
+      failures: [],
+    }))
+    render(<ModelsSection {...injected} />)
+    expect(await screen.findByText('本地 Qwen · Qwen3.8-27B')).toBeTruthy()
+    expect(screen.queryByText('DeepSeek · Flash')).toBeNull()
   })
 
   it('dispatches the provider-card seat per rendered row, keyed by the owning namespace', async () => {
