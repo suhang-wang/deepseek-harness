@@ -3,7 +3,7 @@ import type { SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
 
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, ipcMain, type BrowserWindowConstructorOptions, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, ipcMain, session, type BrowserWindowConstructorOptions, type IpcMainInvokeEvent } from 'electron'
 import type { DesktopLocale } from './locale.ts'
 import { ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseWelcomeOperations, type WelcomeOperations } from './welcome-api.ts'
 
@@ -87,6 +87,7 @@ export function enterpriseWelcomeWindowOptions(platform: NodeJS.Platform, locale
     title: locale.id === 'zh-CN' ? 'DeepSeek Harness 企业版' : 'DeepSeek Harness Enterprise',
     webPreferences: {
       ...options.webPreferences,
+      partition: 'enterprise-welcome',
       additionalArguments: [`--dsh-welcome-locale=${locale.id}`, '--dsh-welcome-mode=enterprise'],
     },
   }
@@ -94,6 +95,9 @@ export function enterpriseWelcomeWindowOptions(platform: NodeJS.Platform, locale
 
 /** Open enterprise sign-in without installing any personal-account or API-key IPC handlers. */
 export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operations: EnterpriseWelcomeOperations): Promise<BrowserWindow> {
+  await session.fromPartition('enterprise-welcome').setProxy({ mode: 'direct' }).catch(() => {
+    /* The system proxy remains; the QR page reports its own load failure. */
+  })
   const window = new BrowserWindow(enterpriseWelcomeWindowOptions(process.platform, locale))
   disposeActiveHandlers?.()
   let active = true

@@ -6,10 +6,12 @@ import { ENTERPRISE_WELCOME_IPC } from '../src/welcome-api.ts'
 const electron = vi.hoisted(() => ({
   create: vi.fn<(options: unknown) => ReturnType<typeof createWindow>>(),
   handlers: new Map<string, (event: unknown, value?: unknown) => Promise<unknown>>(),
+  setProxy: vi.fn<(options: unknown) => Promise<void>>(async () => undefined),
 }))
 vi.mock('electron', () => ({
   app: { getAppPath: () => '/desktop-app' },
   BrowserWindow: vi.fn(function (options: unknown) { return electron.create(options) }),
+  session: { fromPartition: () => ({ setProxy: electron.setProxy }) },
   ipcMain: {
     handle: (name: string, handler: (event: unknown, value?: unknown) => Promise<unknown>) => {
       if (electron.handlers.has(name)) throw new Error(`duplicate IPC handler: ${name}`)
@@ -40,13 +42,14 @@ const signedOut = { status: 'signed-out' as const, generation: 1, pendingRevocat
 const signedIn = { status: 'signed-in' as const, companyId: 'company', employeeId: 'employee', generation: 2, pendingRevocation: false }
 const attemptId = 'c1caeac9-5ea9-45b3-805e-12a2e6d08287'
 
-beforeEach(() => { electron.create.mockReset(); electron.handlers.clear() })
+beforeEach(() => { electron.create.mockReset(); electron.handlers.clear(); electron.setProxy.mockClear() })
 
 describe('enterprise welcome window', () => {
   it('uses a sandboxed local document and an enterprise-only preload mode', async () => {
     const options = enterpriseWelcomeWindowOptions('darwin', resolveDesktopLocale('zh-CN'))
     expect(options.webPreferences).toMatchObject({
       nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+      partition: 'enterprise-welcome',
       additionalArguments: ['--dsh-welcome-locale=zh-CN', '--dsh-welcome-mode=enterprise'],
     })
     expect(options.webPreferences?.preload).toMatch(/preload-welcome\.cjs$/u)
@@ -60,6 +63,7 @@ describe('enterprise welcome window', () => {
       onSignedIn: vi.fn(),
     })
     expect(window.loadFile).toHaveBeenCalledWith(join('/desktop-app', 'renderer', 'enterprise-welcome.html'))
+    expect(electron.setProxy).toHaveBeenCalledWith({ mode: 'direct' })
     expect(window.show).toHaveBeenCalledOnce()
     expect(window.webContents.setWindowOpenHandler.mock.calls[0]![0]()).toEqual({ action: 'deny' })
     const event = { preventDefault: vi.fn() }
