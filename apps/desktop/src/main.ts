@@ -84,6 +84,8 @@ let shuttingDown = false
  */
 let skipQuitConfirmation = false
 let windowsLanguage: string | undefined
+/** Packaged product name used by shell copy and the welcome surface. */
+let desktopProductName = 'DeepSeek Harness'
 /**
  * Whether the backend has reached ready: false until the first ready, back to
  * false when a restart returns it to starting, frozen during shutdown so a
@@ -94,7 +96,7 @@ let backendReady = false
 const rendererConsole = new RendererConsoleTail()
 
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
-  return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
+  return resolveDesktopLocale(windowsLanguage ?? app.getLocale(), desktopProductName)
 }
 /** Quit without the task confirmation; the caller has already decided the application must stop. */
 function quitWithoutConfirmation(): void {
@@ -391,7 +393,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   let updateStopFailure: DesktopHostUncleanExitError | undefined
   let updateState: DesktopUpdateState = { phase: 'idle' }
   const systemLanguages = app.getPreferredSystemLanguages()
-  let locale = resolveDesktopStartupLocale(null, systemLanguages)
+  let locale = resolveDesktopStartupLocale(null, systemLanguages, desktopProductName)
   windowsLanguage = locale.id
   let mandatoryPolicy: DesktopMandatoryUpdatePolicy | undefined
   let mandatoryUI: DesktopMandatoryUpdateWindow | undefined
@@ -884,7 +886,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
     const window = mainWindow
     if (window === undefined || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
       || typeof next !== 'string') return
-    const current = resolveDesktopStartupLocale(next, systemLanguages)
+    const current = resolveDesktopStartupLocale(next, systemLanguages, desktopProductName)
     if (current.id === locale.id) return
     locale = current
     platformView.notifyLocaleChanged()
@@ -1054,7 +1056,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
     : join(process.resourcesPath, 'icon.png')
   app.setAboutPanelOptions({
-    applicationName: applicationIdentity.edition === 'enterprise' ? 'DeepSeek Harness Enterprise' : 'DeepSeek Harness',
+    applicationName: applicationIdentity.productName,
     applicationVersion: app.getVersion(),
     // The release has no separate build number; omit Electron's bundle version.
     version: '',
@@ -1104,7 +1106,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   ]
   const refreshApplicationMenu = (): void => {
     Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'win32' ? devToolsItems : [{
-      label: darwin ? app.name : currentDesktopLocale().messages.application,
+      label: darwin ? (enterpriseMode ? desktopProductName : app.name) : currentDesktopLocale().messages.application,
       submenu: [...applicationItems(), ...devToolsItems],
     }, ...platformMenus()]))
     tray?.relabel()
@@ -1292,7 +1294,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
           }
           throw new Error('desktop enterprise welcome: employee data space was not selected')
         },
-      })
+      }, desktopProductName)
       welcomeWindow = window
       window.once('closed', () => {
         if (welcomeWindow === window) welcomeWindow = undefined
@@ -1345,7 +1347,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
           return { ok: true }
         },
         skip: enterWorkspace,
-      })
+      }, desktopProductName)
       const window = welcomeWindow
       window.once('closed', () => {
         void welcomeBackend?.account.state().then((state) => {
@@ -1371,7 +1373,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
     if (quitting || recovery.active) return
     const state = await readWelcomeState()
     if (isQuitting() || backend.state.phase !== 'ready') return
-    locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
+    locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages, desktopProductName)
     windowsLanguage = locale.id
     refreshApplicationMenu()
     if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
@@ -1536,6 +1538,7 @@ function prepareApplicationIdentity(): DesktopApplicationIdentity {
 let applicationIdentity: DesktopApplicationIdentity | undefined
 try {
   applicationIdentity = prepareApplicationIdentity()
+  desktopProductName = applicationIdentity.productName
   // Resolve logs only after enterprise storage has been selected.
   if (applicationIdentity.edition === 'enterprise') {
     const logs = join(applicationIdentity.userData, 'logs')

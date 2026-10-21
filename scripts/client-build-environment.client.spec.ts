@@ -141,6 +141,27 @@ describe('client build environment', () => {
     expect(repositoryCommitHash('/unused', { DSH_CLIENT_COMMIT_HASH: COMMIT_HASH })).toBe(COMMIT_HASH.slice(0, 7))
   })
 
+  it('brands official artifacts with the company product name during packaging', () => {
+    const parent = {
+      DSH_BUILD_CLIENT_PROFILE: 'official',
+      DSH_CLIENT_COMMIT_HASH: COMMIT_HASH.slice(0, 7),
+      DSH_CLIENT_VERSION: '1.2.3',
+      DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Ruqinba Harness',
+    }
+    expect(resolveClientBuildEnvironment(parent)).toEqual({
+      DSH_CLIENT_BUILD_PROFILE: 'official',
+      DSH_CLIENT_COMMIT_HASH: COMMIT_HASH.slice(0, 7),
+      DSH_CLIENT_TITLE: 'Ruqinba Harness',
+      DSH_CLIENT_VERSION: '1.2.3',
+    })
+    const fixtureRoot = repositoryFixture()
+    expect(officialClientBuildEnvironment(fixtureRoot, parent)).toMatchObject({
+      DSH_CLIENT_TITLE: 'Ruqinba Harness',
+    })
+    expect(() => resolveClientBuildEnvironment({ ...parent, DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'bad\u0000name' }))
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME/u)
+  })
+
   it('owns repository version, commit, and dirty metadata for complete builds', () => {
     const fixtureRoot = repositoryFixture()
     const commit = git(fixtureRoot, ['rev-parse', '--short=7', 'HEAD'])

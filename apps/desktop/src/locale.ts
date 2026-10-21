@@ -346,26 +346,47 @@ export interface DesktopLocale {
 }
 
 /** Resolve Electron's locale to one shipped Desktop dictionary. */
-export function resolveDesktopLocale(locale: string): DesktopLocale {
+export function resolveDesktopLocale(locale: string, productName = 'DeepSeek Harness'): DesktopLocale {
   return locale.toLowerCase().startsWith('zh')
-    ? { id: 'zh-CN', messages: zh }
-    : { id: 'en', messages: en }
+    ? { id: 'zh-CN', messages: brandedMessages(zh, productName) }
+    : { id: 'en', messages: brandedMessages(en, productName) }
+}
+
+/**
+ * Replace the official product name in shell-owned copy for a company build.
+ * Model and provider names are not touched because they never contain the
+ * product name.
+ * @param messages - Selected shell dictionary.
+ * @param productName - Packaged product name; the official name keeps the original tables.
+ * @returns the dictionary with product branding applied.
+ */
+function brandedMessages(messages: DesktopMessages, productName: string): DesktopMessages {
+  if (productName === 'DeepSeek Harness') return messages
+  const branded: { -readonly [Key in keyof DesktopMessages]: string } = { ...messages }
+  for (const key of Object.keys(branded) as (keyof DesktopMessages)[]) {
+    branded[key] = branded[key]
+      .replaceAll('DeepSeek Harness Enterprise', () => productName)
+      .replaceAll('DeepSeek Harness 企业版', () => productName)
+      .replaceAll('DeepSeek Harness', () => productName)
+  }
+  return branded
 }
 
 /**
  * Choose a built-in dictionary from the shared preference, then ordered OS languages.
  * @param preference - explicit locale.preference, or null when no language was selected.
  * @param languages - operating-system languages in preference order.
+ * @param productName - packaged product name used to brand shell copy.
  * @returns the supported dictionary, falling back to English.
  */
-export function resolveDesktopStartupLocale(preference: string | null, languages: readonly string[]): DesktopLocale {
+export function resolveDesktopStartupLocale(preference: string | null, languages: readonly string[], productName = 'DeepSeek Harness'): DesktopLocale {
   const selected = preference?.toLowerCase()
-  if (selected === 'zh' || selected === 'en') return resolveDesktopLocale(selected)
+  if (selected === 'zh' || selected === 'en') return resolveDesktopLocale(selected, productName)
   for (const language of languages) {
     const primary = language.toLowerCase().split('-')[0]
-    if (primary === 'zh' || primary === 'en') return resolveDesktopLocale(primary)
+    if (primary === 'zh' || primary === 'en') return resolveDesktopLocale(primary, productName)
   }
-  return resolveDesktopLocale('en')
+  return resolveDesktopLocale('en', productName)
 }
 
 /** Replace named placeholders in one locale-owned message. */

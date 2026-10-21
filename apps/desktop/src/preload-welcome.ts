@@ -9,11 +9,15 @@ import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 const prefix = '--dsh-welcome-locale='
 const locale = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length)
 if (locale === undefined) throw new Error('desktop welcome: missing window locale')
+const productNamePrefix = '--dsh-product-name='
+const productName = process.argv.find(argument => argument.startsWith(productNamePrefix))?.slice(productNamePrefix.length)
+  ?? 'DeepSeek Harness'
 const mode = process.argv.includes('--dsh-welcome-mode=enterprise') ? 'enterprise' : 'official'
 if (mode === 'enterprise') {
   const enterpriseApi: EnterpriseWelcomeApi = {
     ...resolveDesktopLocale(locale),
     mode: 'enterprise',
+    productName,
     read: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.read) as Promise<EnterpriseIdentityState>,
     beginLogin: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.begin) as Promise<{ readonly attemptId: string }>,
     beginQrLogin: () => ipcRenderer.invoke(ENTERPRISE_WELCOME_IPC.beginQr) as Promise<{ readonly attemptId: string; readonly qrUrl: string }>,
@@ -28,6 +32,7 @@ if (mode === 'enterprise') {
 } else {
 const api: WelcomeApi = {
   ...resolveDesktopLocale(locale),
+  productName,
   analytics: async (eventName, attributes) => {
     if (await api.analyticsEnabled()) await ipcRenderer.invoke(WELCOME_IPC.analytics, eventName, attributes)
   },

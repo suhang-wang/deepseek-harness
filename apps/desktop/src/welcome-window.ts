@@ -41,9 +41,12 @@ function matchingQrCallback(candidate: string, expected: ReturnType<typeof qrCal
  * Resolve the fixed-size welcome window's native material and controls.
  * @param platform - operating system hosting Electron.
  * @param locale - shell-owned localized copy.
+ * @param productName - packaged product name shown by the window and renderer.
  * @returns sandboxed window options with a locale-only preload.
  */
-export function welcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopLocale): BrowserWindowConstructorOptions {
+export function welcomeWindowOptions(
+  platform: NodeJS.Platform, locale: DesktopLocale, productName = 'DeepSeek Harness',
+): BrowserWindowConstructorOptions {
   return {
     width: 600,
     height: 700,
@@ -53,7 +56,7 @@ export function welcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopL
     maximizable: false,
     fullscreenable: false,
     show: false,
-    title: locale.messages.welcomeTitle,
+    title: productName,
     backgroundColor: platform === 'darwin' || platform === 'win32' ? '#00000000' : '#FFFFFF',
     ...(platform === 'darwin' ? {
       titleBarStyle: 'hidden',
@@ -68,7 +71,7 @@ export function welcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopL
     } as const : {}),
     webPreferences: {
       preload: fileURLToPath(new URL('./preload-welcome.cjs', import.meta.url)),
-      additionalArguments: [`--dsh-welcome-locale=${locale.id}`],
+      additionalArguments: [`--dsh-welcome-locale=${locale.id}`, `--dsh-product-name=${productName}`],
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -80,25 +83,29 @@ export function welcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopL
 let disposeActiveHandlers: (() => void) | undefined
 
 /** Same local, sandboxed document with an enterprise-only preload surface. */
-export function enterpriseWelcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopLocale): BrowserWindowConstructorOptions {
-  const options = welcomeWindowOptions(platform, locale)
+export function enterpriseWelcomeWindowOptions(
+  platform: NodeJS.Platform, locale: DesktopLocale, productName = 'DeepSeek Harness',
+): BrowserWindowConstructorOptions {
+  const options = welcomeWindowOptions(platform, locale, productName)
   return {
     ...options,
-    title: locale.id === 'zh-CN' ? 'DeepSeek Harness 企业版' : 'DeepSeek Harness Enterprise',
+    title: productName,
     webPreferences: {
       ...options.webPreferences,
       partition: 'enterprise-welcome',
-      additionalArguments: [`--dsh-welcome-locale=${locale.id}`, '--dsh-welcome-mode=enterprise'],
+      additionalArguments: [`--dsh-welcome-locale=${locale.id}`, '--dsh-welcome-mode=enterprise', `--dsh-product-name=${productName}`],
     },
   }
 }
 
 /** Open enterprise sign-in without installing any personal-account or API-key IPC handlers. */
-export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operations: EnterpriseWelcomeOperations): Promise<BrowserWindow> {
+export async function openEnterpriseWelcomeWindow(
+  locale: DesktopLocale, operations: EnterpriseWelcomeOperations, productName = 'DeepSeek Harness',
+): Promise<BrowserWindow> {
   await session.fromPartition('enterprise-welcome').setProxy({ mode: 'direct' }).catch(() => {
     /* The system proxy remains; the QR page reports its own load failure. */
   })
-  const window = new BrowserWindow(enterpriseWelcomeWindowOptions(process.platform, locale))
+  const window = new BrowserWindow(enterpriseWelcomeWindowOptions(process.platform, locale, productName))
   disposeActiveHandlers?.()
   let active = true
   let transition: Promise<void> | undefined
@@ -204,10 +211,13 @@ export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operati
  * Replaces IPC ownership immediately; the caller closes the previous native window.
  * @param locale - shell-owned localized copy.
  * @param operations - credential write and this-launch-only skip actions.
+ * @param productName - packaged product name shown by the window and renderer.
  * @returns the visible window; a failed load destroys it before rejecting.
  */
-export async function openWelcomeWindow(locale: DesktopLocale, operations: WelcomeOperations): Promise<BrowserWindow> {
-  const options = welcomeWindowOptions(process.platform, locale)
+export async function openWelcomeWindow(
+  locale: DesktopLocale, operations: WelcomeOperations, productName = 'DeepSeek Harness',
+): Promise<BrowserWindow> {
+  const options = welcomeWindowOptions(process.platform, locale, productName)
   const window = new BrowserWindow(options)
   disposeActiveHandlers?.()
   let active = true

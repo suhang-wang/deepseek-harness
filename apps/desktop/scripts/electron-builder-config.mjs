@@ -133,6 +133,7 @@ export function createElectronBuilderConfig(
         ? { name: `dsh-enterprise-${appId}` } : {}),
       dshDesktopAppId: appId,
       dshDesktopEdition: identity.edition,
+      dshDesktopProductName: identity.productName,
       ...(identity.edition === 'enterprise' ? { dshDesktopExternalScheme: identity.protocolScheme } : {}),
       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),

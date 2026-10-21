@@ -36,6 +36,8 @@ export type EnterpriseLoginResult = { readonly status: 'signed-in' | 'pending' |
 /** The native window receives only public identity state and an opaque attempt ID. */
 export interface EnterpriseWelcomeApi extends DesktopLocale {
   readonly mode: 'enterprise'
+  /** Packaged product name shown by the welcome surface. */
+  readonly productName: string
   read(): Promise<EnterpriseIdentityState>
   beginLogin(): Promise<{ readonly attemptId: string }>
   beginQrLogin(): Promise<{ readonly attemptId: string; readonly qrUrl: string }>
@@ -91,6 +93,8 @@ export interface WelcomeOperations {
 
 /** The renderer receives localized copy, login operations, and safe account snapshots. */
 export type WelcomeApi = DesktopLocale & WelcomeOperations & {
+  /** Packaged product name shown by the welcome surface. */
+  readonly productName: string
   /** @param listener - safe account snapshot recipient. @returns subscription disposer. */
   onAccountState(listener: (state: AccountView) => void): () => void
 }

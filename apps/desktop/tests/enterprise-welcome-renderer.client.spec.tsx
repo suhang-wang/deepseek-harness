@@ -9,10 +9,11 @@ const signedOut = { status: 'signed-out' as const, generation: 0, pendingRevocat
 const signedIn = { status: 'signed-in' as const, companyId: 'company', employeeId: 'employee', generation: 1, pendingRevocation: false }
 const attemptId = 'c1caeac9-5ea9-45b3-805e-12a2e6d08287'
 
-function mount(language = 'zh-CN') {
+function mount(language = 'zh-CN', productName = 'Ruqinba Harness') {
   let confirmed: (() => void) | undefined
   const api = {
     ...resolveDesktopLocale(language), mode: 'enterprise' as const,
+    productName,
     read: vi.fn(async () => signedOut as typeof signedOut | typeof signedIn),
     beginLogin: vi.fn(async () => ({ attemptId })),
     beginQrLogin: vi.fn(async () => ({ attemptId, qrUrl: 'https://open.work.weixin.qq.com/wwopen/sso/qrConnect?state=test' })),
@@ -34,6 +35,8 @@ describe('enterprise welcome renderer', () => {
     const api = mount(language)
     const qr = await screen.findByTitle(language === 'zh-CN' ? '请使用企业微信扫码登录' : 'Scan with WeCom to sign in')
     expect(document.documentElement.lang).toBe(language)
+    expect(document.title).toBe('Ruqinba Harness')
+    expect(screen.getByText('Ruqinba Harness')).toBeDefined()
     expect(document.querySelector('input')).toBeNull()
     expect(document.body.textContent).not.toMatch(/API Key|密钥|Skip|跳过/u)
     expect(qr.getAttribute('src')).toContain('/wwopen/sso/qrConnect?state=test')
@@ -87,6 +90,7 @@ describe('enterprise welcome renderer', () => {
   it('shows retry when the public state cannot be read', async () => {
     const api = {
       ...resolveDesktopLocale('en'), mode: 'enterprise' as const,
+      productName: 'Ruqinba Harness',
       read: vi.fn().mockRejectedValue(new Error('private Host diagnosis')),
       beginLogin: vi.fn(async () => ({ attemptId })),
       beginQrLogin: vi.fn(async () => ({ attemptId, qrUrl: 'https://open.work.weixin.qq.com/wwopen/sso/qrConnect?state=test' })),

@@ -102,6 +102,18 @@ body {
   -webkit-user-drag: none;
 }
 
+.brand-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-brand);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 40px;
+}
+
 .tagline {
   margin: 0;
   color: var(--dsw-alias-label-secondary);

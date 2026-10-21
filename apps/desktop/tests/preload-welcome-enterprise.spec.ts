@@ -17,12 +17,13 @@ afterEach(() => {
 })
 
 it('exposes only the enterprise login bridge in enterprise mode', async () => {
-  process.argv = ['electron', '--dsh-welcome-locale=zh-CN', '--dsh-welcome-mode=enterprise']
+  process.argv = ['electron', '--dsh-welcome-locale=zh-CN', '--dsh-welcome-mode=enterprise', '--dsh-product-name=Ruqinba Harness']
   await import('../src/preload-welcome.ts')
   expect([...electron.exposed.keys()]).toEqual(['dshEnterpriseWelcome'])
   const bridge = electron.exposed.get('dshEnterpriseWelcome') as Record<string, unknown>
-  expect(Object.keys(bridge).sort()).toEqual(['beginLogin', 'finishLogin', 'id', 'messages', 'mode', 'read'].sort())
+  expect(Object.keys(bridge).sort()).toEqual(['beginLogin', 'beginQrLogin', 'finishLogin', 'id', 'messages', 'mode', 'onConfirmed', 'productName', 'read'].sort())
   expect(bridge.mode).toBe('enterprise')
+  expect(bridge.productName).toBe('Ruqinba Harness')
   for (const name of ['saveApiKey', 'skip', 'startSignIn', 'copySignInLink', 'onAccountState']) {
     expect(bridge).not.toHaveProperty(name)
   }

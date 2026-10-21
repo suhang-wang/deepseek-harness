@@ -9,6 +9,17 @@ describe('desktop locale dictionaries', () => {
     expect(resolveDesktopLocale('fr-FR').messages).toEqual(en)
   })
 
+  it('brands shell copy with the packaged company name', () => {
+    const english = resolveDesktopLocale('en', 'Ruqinba Harness').messages
+    expect(english.aboutProduct).toBe('Ruqinba Harness')
+    expect(english.startupFailed).toBe('Ruqinba Harness is unavailable')
+    expect(english.quitApplication).toBe('Quit Ruqinba Harness')
+    const chinese = resolveDesktopLocale('zh-CN', 'Ruqinba Harness').messages
+    expect(chinese.aboutMenu).toBe('关于 Ruqinba Harness')
+    expect(chinese.startupFailed).toBe('Ruqinba Harness 无法使用')
+    expect(resolveDesktopStartupLocale('zh', [], 'Ruqinba Harness').messages.quitTitle).toBe('退出 Ruqinba Harness？')
+  })
+
   it('formats named values without consuming unknown placeholders', () => {
     expect(formatDesktopMessage('{name}@{version} {missing}', { name: 'plugin', version: '1.2.3' }))
       .toBe('plugin@1.2.3 {missing}')

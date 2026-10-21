@@ -78,6 +78,17 @@ describe('official browser-brand plugin', () => {
     expect(subject.slots.entries(HERO_HOLE)).toHaveLength(0)
   })
 
+  it('renders the packaged company name and initial for a company build', () => {
+    vi.stubEnv('DSH_CLIENT_TITLE', 'Ruqinba Harness')
+    const name = render(<OfficialBrandName />)
+    expect(name.container.textContent).toBe('Ruqinba Harness')
+    name.unmount()
+
+    const mark = render(<OfficialBrandMark size={32} />)
+    expect(mark.container.textContent).toBe('R')
+    expect(mark.container.querySelector('span')?.style.width).toBe('32px')
+  })
+
   it('renders the official name independently from both requested mark sizes', () => {
     const name = render(<OfficialBrandName />)
     expect(name.container.querySelector('svg')?.getAttribute('viewBox')).toBe('26 0 156 24')

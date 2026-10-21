@@ -449,6 +449,7 @@ async function main(): Promise<void> {
     })
   // The edition and service origin are selected only by explicit command arguments.
   delete environment.DSH_DESKTOP_ENTERPRISE_MODE
+  delete environment.DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME
   delete environment.DSH_ENTERPRISE_SERVICE_ORIGIN
   if (invocation.enterprise !== undefined) {
     environment.DSH_DESKTOP_ENTERPRISE_MODE = '1'

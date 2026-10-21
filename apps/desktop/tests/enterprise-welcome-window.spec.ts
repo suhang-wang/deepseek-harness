@@ -59,9 +59,12 @@ describe('enterprise welcome window', () => {
     expect(options.webPreferences).toMatchObject({
       nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
       partition: 'enterprise-welcome',
-      additionalArguments: ['--dsh-welcome-locale=zh-CN', '--dsh-welcome-mode=enterprise'],
+      additionalArguments: ['--dsh-welcome-locale=zh-CN', '--dsh-welcome-mode=enterprise', '--dsh-product-name=DeepSeek Harness'],
     })
     expect(options.webPreferences?.preload).toMatch(/preload-welcome\.cjs$/u)
+    const company = enterpriseWelcomeWindowOptions('win32', resolveDesktopLocale('zh-CN'), 'Ruqinba Harness')
+    expect(company.title).toBe('Ruqinba Harness')
+    expect(company.webPreferences?.additionalArguments).toContain('--dsh-product-name=Ruqinba Harness')
     const window = createWindow()
     electron.create.mockReturnValue(window)
     await openEnterpriseWelcomeWindow(resolveDesktopLocale('zh-CN'), {

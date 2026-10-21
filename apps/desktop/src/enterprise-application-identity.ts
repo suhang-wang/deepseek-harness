@@ -9,6 +9,7 @@ const BUNDLE = '@dsh-enterprise/harness-bundle'
 const IDENTITY = '@dsh-enterprise/harness-identity'
 const APP_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){2,}$/u
 const EXTERNAL_SCHEME = /^[a-z][a-z0-9-]{2,63}$/u
+const PRODUCT_NAME = /^[^\u0000-\u001f\u007f]{1,64}$/u
 const PERSONAL_IDS = new Set(['com.deepseek.harness', 'com.deepseek.dsh'])
 
 interface RuntimeIdentity {
@@ -20,17 +21,20 @@ interface RuntimeIdentity {
 interface DevelopmentIdentity {
   readonly edition: 'development'
   readonly externalScheme: 'dsh'
+  readonly productName: 'DeepSeek Harness'
 }
 
 interface OfficialIdentity {
   readonly edition: 'official'
   readonly externalScheme: 'dsh'
+  readonly productName: 'DeepSeek Harness'
 }
 
 interface EnterpriseIdentity {
   readonly edition: 'enterprise'
   readonly externalScheme: string
   readonly appId: string
+  readonly productName: string
   readonly userData: string
   readonly sessionData: string
   readonly bootstrapHome: string
@@ -56,13 +60,13 @@ function enterpriseSignals(runtime: RuntimeIdentity): boolean {
 export function resolveDesktopApplicationIdentity(
   packaged: boolean, manifest: unknown, runtime: RuntimeIdentity | undefined, appData: string,
 ): DesktopApplicationIdentity {
-  if (!packaged) return Object.freeze({ edition: 'development', externalScheme: 'dsh' })
+  if (!packaged) return Object.freeze({ edition: 'development', externalScheme: 'dsh', productName: 'DeepSeek Harness' })
   if (!record(manifest) || (manifest.dshDesktopEdition !== 'official' && manifest.dshDesktopEdition !== 'enterprise')
     || runtime === undefined) throw new Error('desktop edition: missing packaged edition or runtime metadata')
 
   if (manifest.dshDesktopEdition === 'official') {
     if (enterpriseSignals(runtime)) throw new Error('desktop edition: official marker conflicts with enterprise runtime')
-    return Object.freeze({ edition: 'official', externalScheme: 'dsh' })
+    return Object.freeze({ edition: 'official', externalScheme: 'dsh', productName: 'DeepSeek Harness' })
   }
 
   const appId = manifest.dshDesktopAppId
@@ -83,9 +87,14 @@ export function resolveDesktopApplicationIdentity(
     throw new Error('desktop edition: incomplete enterprise bundle, identity or service origin')
   }
   if (!isAbsolute(appData)) throw new Error('desktop edition: Electron appData path must be absolute')
+  const rawProductName: unknown = manifest.dshDesktopProductName
+  const productName = rawProductName === undefined ? 'DeepSeek Harness' : rawProductName
+  if (typeof productName !== 'string' || !PRODUCT_NAME.test(productName)) {
+    throw new Error('desktop edition: enterprise package requires a valid product name')
+  }
   const userData = join(appData, appId)
   return Object.freeze({
-    edition: 'enterprise', externalScheme, appId, userData,
+    edition: 'enterprise', externalScheme, appId, productName, userData,
     sessionData: join(userData, 'session'),
     bootstrapHome: resolveEnterpriseDataSpace(userData, null).home,
   })

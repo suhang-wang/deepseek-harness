@@ -41,7 +41,7 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
   useEffect(() => {
     mounted.current = true
     document.documentElement.lang = api.id
-    document.title = m.title
+    document.title = api.productName
     const current = ++revision.current
     void api.read().then(state => {
       if (mounted.current && revision.current === current) {
@@ -52,7 +52,7 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
       if (mounted.current && revision.current === current) setPhase('error')
     })
     return () => { mounted.current = false; revision.current++ }
-  }, [api, m.title])
+  }, [api])
 
   async function start(mode: 'qr' | 'browser') {
     if (busy.current) return
@@ -130,7 +130,9 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
   return <>
     <div className="titlebar" aria-hidden="true" />
     <main className="welcome enterprise-welcome" aria-labelledby="enterprise-heading">
-      <img className="brand" src="assets/welcome-brand.svg" alt="DeepSeek Harness" width="472" height="40" />
+      {api.productName === 'DeepSeek Harness'
+        ? <img className="brand" src="assets/welcome-brand.svg" alt="DeepSeek Harness" width="472" height="40" />
+        : <span className="brand brand-text">{api.productName}</span>}
       <section className="enterprise-welcome-content" aria-live="polite">
         <h1 id="enterprise-heading">{m.heading}</h1>
         <p>{phase === 'loading' ? m.description : status}</p>
