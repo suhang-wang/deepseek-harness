@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EnterpriseWelcomeApi } from '../welcome-api.ts'
 
-type Phase = 'loading' | 'opening' | 'pending' | 'opening-workspace' | 'denied' | 'expired' | 'ready' | 'error'
+type Phase = 'loading' | 'opening' | 'pending' | 'opening-workspace' | 'stalled' | 'denied' | 'expired' | 'ready' | 'error'
 
 const copy = {
   'zh-CN': {
@@ -13,7 +13,7 @@ const copy = {
     browserPending: '请在浏览器完成企业微信登录，成功后将自动打开工作区。', retry: '重新登录',
     denied: '企业微信授权未完成，请重新登录。', expired: '登录已过期，请重新登录。',
     error: '暂时无法连接企业登录服务，请重试。', ready: '已登录，正在打开工作区…',
-    openingWorkspace: '正在打开应用…',
+    openingWorkspace: '正在打开应用…', stalled: '登录回调未完成，请重新登录。',
   },
   en: {
     title: 'DeepSeek Harness Enterprise', heading: 'Sign in with WeCom',
@@ -23,9 +23,11 @@ const copy = {
     browserPending: 'Complete WeCom sign-in in your browser. Your workspace will open automatically.', retry: 'Try signing in again',
     denied: 'WeCom authorization was not completed. Please try again.', expired: 'Sign-in expired. Please try again.',
     error: 'The enterprise sign-in service is unavailable. Please try again.', ready: 'Signed in. Opening your workspace…',
-    openingWorkspace: 'Opening your workspace…',
+    openingWorkspace: 'Opening your workspace…', stalled: 'WeCom sign-in did not complete. Please try again.',
   },
 } as const
+
+const STALL_AFTER_MS = 90_000
 
 export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcomeApi }) {
   const m = api.id === 'zh-CN' ? copy['zh-CN'] : copy.en
@@ -108,12 +110,22 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
     return () => { stopped = true; clearTimeout(timer) }
   }, [api, polling])
 
+  useEffect(() => {
+    if (phase !== 'opening-workspace') return
+    const timer = setTimeout(() => { if (mounted.current) setPhase('stalled') }, STALL_AFTER_MS)
+    return () => { clearTimeout(timer) }
+  }, [phase])
+
   const isPending = phase === 'pending'
+  // Removing the QR document cancels its in-flight callback navigation.
+  const showQr = (phase === 'pending' || phase === 'opening-workspace') && qrUrl !== null
+  const qrHidden = phase === 'opening-workspace'
   const isBusy = phase === 'loading' || phase === 'opening' || phase === 'opening-workspace'
   const status = phase === 'opening' ? m.opening : phase === 'pending' ? m.pending
     : phase === 'opening-workspace' ? m.openingWorkspace
-      : phase === 'denied' ? m.denied : phase === 'expired' ? m.expired : phase === 'ready' ? m.ready
-        : phase === 'error' ? m.error : ''
+      : phase === 'stalled' ? m.stalled
+        : phase === 'denied' ? m.denied : phase === 'expired' ? m.expired : phase === 'ready' ? m.ready
+          : phase === 'error' ? m.error : ''
 
   return <>
     <div className="titlebar" aria-hidden="true" />
@@ -122,18 +134,18 @@ export function EnterpriseWelcomePage({ api }: { readonly api: EnterpriseWelcome
       <section className="enterprise-welcome-content" aria-live="polite">
         <h1 id="enterprise-heading">{m.heading}</h1>
         <p>{phase === 'loading' ? m.description : status}</p>
-        {isPending && qrUrl !== null && <div className="enterprise-login-qr-frame">
+        {showQr && <div className={`enterprise-login-qr-frame${qrHidden ? ' is-opening' : ''}`} aria-hidden={qrHidden}>
           <iframe className="enterprise-login-qr" title={m.pending} src={qrUrl}
             sandbox="allow-scripts allow-same-origin allow-forms allow-top-navigation" referrerPolicy="no-referrer" />
         </div>}
         {isPending && <p className="enterprise-welcome-hint">{qrUrl === null ? m.browserPending : m.pendingHint}</p>}
       </section>
       <div className="actions enterprise-welcome-actions">
-        {(phase === 'denied' || phase === 'expired' || phase === 'error') &&
+        {(phase === 'stalled' || phase === 'denied' || phase === 'expired' || phase === 'error') &&
           <button id="enterprise-start" className="primary" type="button" onClick={() => { void start('qr') }}>
             {m.retry}
           </button>}
-        {((isPending && qrUrl !== null) || phase === 'error') &&
+        {((isPending && qrUrl !== null) || phase === 'stalled' || phase === 'error') &&
           <button id="enterprise-browser" className="secondary" type="button" onClick={() => { void start('browser') }}>{m.browser}</button>}
         {isBusy && <button className="primary" type="button" disabled aria-label={status || m.opening}>{status || m.opening}</button>}
       </div>

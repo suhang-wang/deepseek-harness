@@ -384,6 +384,11 @@ body {
   background: #fff;
 }
 
+.enterprise-login-qr-frame.is-opening {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .enterprise-login-qr {
   display: block;
   width: 400px;

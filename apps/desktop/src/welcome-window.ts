@@ -110,6 +110,15 @@ export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operati
     confirmedForwarded = true
     window.webContents.send(ENTERPRISE_WELCOME_EVENT.confirmed)
   }
+  const forwardCallback = (url: string): void => {
+    if (callbackForwarded) return
+    callbackForwarded = true
+    // Complete the one-time callback outside the QR frame so the sign-in does
+    // not depend on that frame's navigation surviving a renderer transition.
+    void fetch(url, { redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(10_000) })
+      .then((response) => { if (!response.ok) callbackForwarded = false })
+      .catch(() => { callbackForwarded = false })
+  }
   const enterWorkspace = (state: Awaited<ReturnType<EnterpriseWelcomeOperations['read']>>): Promise<void> => {
     if (state.status !== 'signed-in') throw new Error('desktop enterprise welcome: unconfirmed identity state')
     transition ??= Promise.resolve().then(() => operations.onSignedIn(state))
@@ -164,18 +173,18 @@ export async function openEnterpriseWelcomeWindow(locale: DesktopLocale, operati
   window.webContents.on('will-navigate', (event) => {
     event.preventDefault()
     const expected = expectedQrCallback
-    if (!active || !expected || callbackForwarded || !matchingQrCallback(event.url, expected)) return
-    callbackForwarded = true
-    notifyConfirmed()
+    if (!active || !expected || !matchingQrCallback(event.url, expected)) return
     // WeCom redirects the embedded QR page through the top frame. Keep the
     // trusted local welcome page alive while completing the one-time callback.
-    void fetch(event.url, { redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(10_000) })
-      .then(response => { if (!response.ok) callbackForwarded = false })
-      .catch(() => { callbackForwarded = false })
+    forwardCallback(event.url)
+    notifyConfirmed()
   })
   window.webContents.on('will-frame-navigate', (details) => {
     const expected = expectedQrCallback
     if (!active || !expected || details.isMainFrame || !matchingQrCallback(details.url, expected)) return
+    // The QR frame stays mounted while polling; forwarding here also covers a
+    // frame that unloads before its own callback request completes.
+    forwardCallback(details.url)
     notifyConfirmed()
   })
   try {

@@ -44,13 +44,27 @@ describe('enterprise welcome renderer', () => {
     expect(document.querySelector('iframe')).toBeNull()
   })
 
-  it('shows an opening state after the QR callback is confirmed', async () => {
+  it('keeps the QR document mounted while the confirmed callback opens the workspace', async () => {
     const api = mount()
     await screen.findByTitle('请使用企业微信扫码登录')
     await vi.waitFor(() => { expect(api.onConfirmed).toHaveBeenCalledOnce() })
     act(() => { api.confirm() })
     expect(await screen.findAllByText('正在打开应用…')).not.toHaveLength(0)
-    expect(document.querySelector('iframe')).toBeNull()
+    expect(document.querySelector('iframe')).not.toBeNull()
+    expect(document.querySelector('.enterprise-login-qr-frame')?.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('reports a stalled callback instead of waiting for the attempt to expire', async () => {
+    const api = mount()
+    await screen.findByTitle('请使用企业微信扫码登录')
+    await vi.waitFor(() => { expect(api.onConfirmed).toHaveBeenCalledOnce() })
+    vi.useFakeTimers()
+    try {
+      act(() => { api.confirm() })
+      act(() => { vi.advanceTimersByTime(90_000) })
+      expect(screen.getByText('登录回调未完成，请重新登录。')).toBeDefined()
+      expect(document.getElementById('enterprise-start')).not.toBeNull()
+    } finally { vi.useRealTimers() }
   })
 
   it('retries transient finish failures before showing the error state', async () => {

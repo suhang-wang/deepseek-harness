@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveDesktopLocale } from '../src/locale.ts'
 import { ENTERPRISE_WELCOME_EVENT, ENTERPRISE_WELCOME_IPC } from '../src/welcome-api.ts'
 
@@ -43,7 +43,15 @@ const signedOut = { status: 'signed-out' as const, generation: 1, pendingRevocat
 const signedIn = { status: 'signed-in' as const, companyId: 'company', employeeId: 'employee', generation: 2, pendingRevocation: false }
 const attemptId = 'c1caeac9-5ea9-45b3-805e-12a2e6d08287'
 
-beforeEach(() => { electron.create.mockReset(); electron.handlers.clear(); electron.setProxy.mockClear() })
+let fetchMock: ReturnType<typeof vi.fn>
+beforeEach(() => {
+  electron.create.mockReset()
+  electron.handlers.clear()
+  electron.setProxy.mockClear()
+  fetchMock = vi.fn(async () => new Response(null, { status: 200 }))
+  vi.stubGlobal('fetch', fetchMock)
+})
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('enterprise welcome window', () => {
   it('uses a sandboxed local document and an enterprise-only preload mode', async () => {
@@ -90,9 +98,11 @@ describe('enterprise welcome window', () => {
     await electron.handlers.get(ENTERPRISE_WELCOME_IPC.beginQr)!(own)
     const navigate = window.webContents.on.mock.calls
       .find(call => call[0] === 'will-frame-navigate')![1]
-    navigate({ preventDefault: vi.fn(), url: `${callback}?code=code&state=${state}&appid=ww123`, isMainFrame: false })
-    navigate({ preventDefault: vi.fn(), url: `${callback}?code=code&state=${state}&appid=ww123`, isMainFrame: false })
+    const callbackUrl = `${callback}?code=code&state=${state}&appid=ww123`
+    navigate({ preventDefault: vi.fn(), url: callbackUrl, isMainFrame: false })
+    navigate({ preventDefault: vi.fn(), url: callbackUrl, isMainFrame: false })
     expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(ENTERPRISE_WELCOME_EVENT.confirmed)
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(callbackUrl, expect.objectContaining({ redirect: 'error', referrerPolicy: 'no-referrer' }))
   })
 
   it('rejects another sender, an invalid attempt, and only enters workspace after a verified signed-in state', async () => {
