@@ -29,6 +29,7 @@
 import type {
   Api,
   AuthContext,
+  Context,
   CredentialStore,
   Model,
   Models,
@@ -178,6 +179,24 @@ function resolveReasoningLevel(
     `pi-ai provider "${model.provider}" model "${model.id}" does not support reasoning effort "${effort}"`,
     'UNSUPPORTED_REASONING_EFFORT',
   )
+}
+
+/**
+ * Strip replayed thinking blocks for a target model that does not reason.
+ * pi-ai otherwise serializes them into an assistant `reasoning` field, which
+ * strict OpenAI-compatible gateways reject as an unsupported request field.
+ * @param context - converted pi-ai request context.
+ * @returns a context whose assistant messages contain no thinking blocks; the input is unchanged.
+ */
+export function withoutReasoningHistory(context: Context): Context {
+  return {
+    ...context,
+    messages: context.messages.map((message) => {
+      if (message.role !== 'assistant') return message
+      const content = message.content.filter(block => block.type !== 'thinking')
+      return content.length === message.content.length ? message : { ...message, content }
+    }),
+  }
 }
 
 /**
@@ -413,7 +432,8 @@ export class PiAiAdapter extends LlmAdapter {
             maxBytes: profile.requestImageMaxBytes,
           },
         }, onReplayDegrade)
-      const events = snapshot.models.streamSimple(model, context, {
+      const modelContext = model.reasoning ? context : withoutReasoningHistory(context)
+      const events = snapshot.models.streamSimple(model, modelContext, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
