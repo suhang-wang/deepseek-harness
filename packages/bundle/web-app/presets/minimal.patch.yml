@@ -29,6 +29,10 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                # Enterprise Hosts set these to condense later in long chats; other builds keep the shipped defaults.
+                config:
+                  headroomTokens: !!js Number(process.env.DSH_COMPACTION_HEADROOM_TOKENS ?? 65536)
+                  retainRatio: !!js Number(process.env.DSH_COMPACTION_RETAIN_RATIO ?? 0.16)
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
           - id: persistent-shell

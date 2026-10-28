@@ -597,6 +597,8 @@ describe('desktop main startup', () => {
     expect(harness.hosts[0]!.openExternal).toBeDefined()
     expect(harness.hosts[0]!.enterpriseServiceOrigin).toBe('https://enterprise.example.test')
     expect(harness.hosts[0]!.environment?.DSH_ENTERPRISE_SERVICE_ORIGIN).toBe('https://enterprise.example.test')
+    expect(harness.hosts[0]!.environment?.DSH_COMPACTION_HEADROOM_TOKENS).toBe('16384')
+    expect(harness.hosts[0]!.environment?.DSH_COMPACTION_RETAIN_RATIO).toBe('0.25')
     const first = harness.hosts[0]!
     const bootstrap = resolveEnterpriseDataSpace(harness.app.getPath('userData'), null)
     const bootstrapWindow = harness.windows[0]!
@@ -2485,6 +2487,8 @@ describe('desktop main startup', () => {
     expect(harness.hosts[0]!.openExternal).toBeUndefined()
     expect(harness.hosts[0]!.environment?.DSH_CLIENT_VERSION).toBe('1.2.3')
     expect(harness.hosts[0]!.environment?.DSH_TEST_LOGIN_SHELL).toBe('login')
+    expect(harness.hosts[0]!.environment?.DSH_COMPACTION_HEADROOM_TOKENS).toBeUndefined()
+    expect(harness.hosts[0]!.environment?.DSH_COMPACTION_RETAIN_RATIO).toBeUndefined()
     expect(console.warn).toHaveBeenCalledWith('desktop login shell: /account/shell failed (timeout)')
     expect(harness.analytics).toHaveBeenCalledExactlyOnceWith({ eventName: 'desktop_app_launch', timestamp: Date.now(), attributes: {} })
     expect(harness.hosts[0]!.start).toHaveBeenCalledTimes(1)

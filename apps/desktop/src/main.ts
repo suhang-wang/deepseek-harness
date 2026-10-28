@@ -338,6 +338,16 @@ function createWindow(preload: string, show = false, primary = false, browserSes
   return window
 }
 
+/**
+ * Enterprise Hosts condense long chats later than the shared defaults, whose
+ * 65,536-token headroom caps a 131,072-token window at roughly half its size.
+ * An inherited environment value wins, so a deployment can still override it.
+ */
+const ENTERPRISE_COMPACTION_ENVIRONMENT = Object.freeze({
+  DSH_COMPACTION_HEADROOM_TOKENS: '16384',
+  DSH_COMPACTION_RETAIN_RATIO: '0.25',
+})
+
 async function main(applicationIdentity: DesktopApplicationIdentity): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
@@ -377,7 +387,11 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   const prepareHostEnvironment = async (): Promise<void> => {
     const environment = await loginShell
     hostEnvironment = resources.enterpriseServiceOrigin === undefined ? environment
-      : { ...environment, DSH_ENTERPRISE_SERVICE_ORIGIN: resources.enterpriseServiceOrigin }
+      : {
+        ...ENTERPRISE_COMPACTION_ENVIRONMENT,
+        ...environment,
+        DSH_ENTERPRISE_SERVICE_ORIGIN: resources.enterpriseServiceOrigin,
+      }
   }
   let quitting = false
   let startup: Promise<void> | undefined
