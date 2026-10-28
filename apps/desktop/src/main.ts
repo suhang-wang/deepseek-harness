@@ -505,7 +505,15 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections
         if (enterpriseMode) {
-          enterpriseWelcomeBackend = await connectEnterpriseWelcome(ready.url, (input, init) => net.fetch(input, init))
+          const welcomeSession = session.fromPartition('enterprise-welcome')
+          await welcomeSession.setProxy({ mode: 'direct' }).catch(() => {
+            /* The system proxy remains; the QR page reports its own load failure. */
+          })
+          enterpriseWelcomeBackend = await connectEnterpriseWelcome(ready.url, (input, init) => welcomeSession.fetch(input, init))
+            .catch((error: unknown) => {
+              console.error('desktop enterprise welcome: backend unavailable', error)
+              throw error
+            })
           queueMicrotask(() => { host.flushPendingEnterpriseIdentity() })
           return
         }

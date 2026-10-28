@@ -145,35 +145,53 @@ export async function openEnterpriseWelcomeWindow(
   }
   ipcMain.handle(ENTERPRISE_WELCOME_IPC.read, async (event) => {
     assertSender(event)
-    const state = await operations.read()
-    if (state.status === 'signed-in') await enterWorkspace(state)
-    return state
+    try {
+      const state = await operations.read()
+      if (state.status === 'signed-in') await enterWorkspace(state)
+      return state
+    } catch (error) {
+      console.error('desktop enterprise welcome: read failed', error)
+      throw error
+    }
   })
   ipcMain.handle(ENTERPRISE_WELCOME_IPC.begin, (event) => {
     assertSender(event)
     expectedQrCallback = undefined
     confirmedForwarded = false
-    return operations.beginLogin()
+    return operations.beginLogin().catch((error: unknown) => {
+      console.error('desktop enterprise welcome: browser sign-in failed', error)
+      throw error
+    })
   })
   ipcMain.handle(ENTERPRISE_WELCOME_IPC.beginQr, async (event) => {
     assertSender(event)
     expectedQrCallback = undefined
     confirmedForwarded = false
-    const result = await operations.beginQrLogin()
-    expectedQrCallback = qrCallback(result.qrUrl)
-    callbackForwarded = false
-    return result
+    try {
+      const result = await operations.beginQrLogin()
+      expectedQrCallback = qrCallback(result.qrUrl)
+      callbackForwarded = false
+      return result
+    } catch (error) {
+      console.error('desktop enterprise welcome: QR sign-in failed', error)
+      throw error
+    }
   })
   ipcMain.handle(ENTERPRISE_WELCOME_IPC.finish, async (event, attemptId: unknown) => {
     assertSender(event)
     if (typeof attemptId !== 'string' || !ENTERPRISE_ATTEMPT_ID.test(attemptId)) {
       throw new Error('desktop enterprise welcome: invalid attempt')
     }
-    const result = await operations.finishLogin(attemptId)
-    if (result.status === 'signed-in') {
-      await enterWorkspace(await operations.read())
+    try {
+      const result = await operations.finishLogin(attemptId)
+      if (result.status === 'signed-in') {
+        await enterWorkspace(await operations.read())
+      }
+      return result
+    } catch (error) {
+      console.error('desktop enterprise welcome: finish sign-in failed', error)
+      throw error
     }
-    return result
   })
   window.once('closed', disposeHandlers)
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

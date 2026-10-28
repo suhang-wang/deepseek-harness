@@ -333,7 +333,9 @@ vi.mock('electron', () => ({
     removeHandler: (channel: string) => { harness.handlers.delete(channel) },
   },
   Menu: { setApplicationMenu: harness.menu.setApplicationMenu, buildFromTemplate: harness.menu },
-  session: { fromPath: harness.sessionFromPath, defaultSession: {
+  session: { fromPath: harness.sessionFromPath, fromPartition: vi.fn(() => ({
+    fetch: vi.fn(), setProxy: vi.fn(async () => undefined),
+  })), defaultSession: {
     setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
   } },
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
