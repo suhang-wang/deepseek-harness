@@ -1,0 +1,64 @@
+name: Verify Windows company picker
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Windows package workflow run id'
+        required: true
+        default: '42769244903'
+      artifact_name:
+        description: 'Package artifact name'
+        required: true
+        default: 'windows-enterprise-x64-unsigned-0.2.1-alpha.4.20261110.24.1-42769244903-1'
+      companies:
+        description: 'Comma-separated expected company names'
+        required: true
+        default: '如钦巴,SnailTiny'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: deepseek-harness
+    steps:
+      - name: Check out the harness repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          path: deepseek-harness
+      - name: Download the Windows package artifact
+        uses: actions/download-artifact@v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: artifact
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+      - name: Install, launch and assert the company picker
+        env:
+          EXPECTED_COMPANIES: ${{ inputs.companies }}
+        run: |
+          $installer = Get-ChildItem -Path ..\artifact -Recurse -Filter '*.exe' | Where-Object { $_.Name -notmatch '^Uninstall' } | Select-Object -First 1
+          if (-not $installer) { throw 'installer not found in the artifact' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'enterprise-picker'
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "installer exited $($install.ExitCode)" }
+          $exe = Get-ChildItem -Path $installDir -Filter '*.exe' | Where-Object { $_.Name -notmatch '^Uninstall' } | Select-Object -First 1
+          if (-not $exe) { throw 'installed executable not found' }
+          $app = Start-Process -FilePath $exe.FullName -ArgumentList '--remote-debugging-port=9222' -PassThru
+          try {
+            node apps/desktop/scripts/verify-company-picker.mjs 9222 "$env:EXPECTED_COMPANIES"
+            if ($LASTEXITCODE -ne 0) { throw "picker verification exited $LASTEXITCODE" }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
