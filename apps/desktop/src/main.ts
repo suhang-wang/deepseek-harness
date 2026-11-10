@@ -31,6 +31,8 @@ import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError 
 import { KeychainSessionStore } from './keychain-session-store.ts'
 import { beginEnterpriseLoginAfterStorageReady } from './enterprise-login-preflight.ts'
 import { resolveEnterpriseDataSpace, environmentForEnterpriseSpace } from './enterprise-data-space.ts'
+import { companyIdentityMatches, enterpriseCompanyById, legacyEnterpriseCompany, type EnterpriseCompany } from './enterprise-companies.ts'
+import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 import { EnterpriseNativeIdentityBinding } from './enterprise-native-binding.ts'
 import { EnterpriseBrowserSessions } from './enterprise-browser-sessions.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -41,6 +43,7 @@ import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } fro
 import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
+import { isAppOpenDeepLink } from './deep-link.ts'
 import { desktopUpdateChannel } from './update-channel.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { DesktopCommandManager } from './command-management.ts'
@@ -48,6 +51,7 @@ import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
 import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
 import { openEnterpriseWelcomeWindow, openWelcomeWindow } from './welcome-window.ts'
+import { openCompanyPickerWindow } from './company-window.ts'
 import { WELCOME_IPC, needsWelcome, type WelcomeNotice } from './welcome-api.ts'
 import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-backend.ts'
 import { connectEnterpriseWelcome, type EnterpriseWelcomeBackend } from './enterprise-welcome-backend.ts'
@@ -61,7 +65,7 @@ import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopP
 import { desktopClientMetadata, desktopClientVersion } from './client-metadata.ts'
 import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
 import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
-import { readDesktopSettings } from './settings.ts'
+import { readDesktopSettings, writeDesktopSettings, type DesktopSettings } from './settings.ts'
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
@@ -86,6 +90,8 @@ let skipQuitConfirmation = false
 let windowsLanguage: string | undefined
 /** Packaged product name used by shell copy and the welcome surface. */
 let desktopProductName = 'DeepSeek Harness'
+/** Active company suffix shown by the primary workspace window, when multi-company. */
+let primaryWindowCompanyTitle: string | undefined
 /**
  * Whether the backend has reached ready: false until the first ready, back to
  * false when a restart returns it to starting, frozen during shutdown so a
@@ -161,6 +167,7 @@ interface RuntimeResources {
   readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
   readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
   readonly enterpriseServiceOrigin?: string
+  readonly enterpriseCompanies?: readonly EnterpriseCompany[]
 }
 
 function runtimeResources(): RuntimeResources {
@@ -182,7 +189,8 @@ function runtimeResources(): RuntimeResources {
   return { node, nodeBin, pnpm, dsh,
     ...(allowedHostPlugins === undefined ? {} : { allowedHostPlugins: Object.freeze(allowedHostPlugins) }),
     ...(trustedHostPackages === undefined ? {} : { trustedHostPackages: Object.freeze(trustedHostPackages) }),
-    ...(runtimeManifest?.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: runtimeManifest.enterpriseServiceOrigin }) }
+    ...(runtimeManifest?.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: runtimeManifest.enterpriseServiceOrigin }),
+    ...(runtimeManifest?.enterpriseCompanies === undefined ? {} : { enterpriseCompanies: runtimeManifest.enterpriseCompanies }) }
 }
 
 function developmentPrimaryRuntime(): string {
@@ -254,6 +262,8 @@ function createWindow(preload: string, show = false, primary = false, browserSes
     webPreferences: {
       preload,
       ...(browserSession === undefined ? {} : { session: browserSession }),
+      ...(primary && primaryWindowCompanyTitle !== undefined
+        ? { additionalArguments: [`--dsh-brand-title=${primaryWindowCompanyTitle}`] } : {}),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -266,6 +276,13 @@ function createWindow(preload: string, show = false, primary = false, browserSes
     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  if (primary) {
+    window.on('page-title-updated', (event) => {
+      event.preventDefault()
+      window.setTitle(primaryWindowCompanyTitle ?? desktopProductName)
+    })
+    window.setTitle(primaryWindowCompanyTitle ?? desktopProductName)
+  }
   if (process.platform === 'darwin' || process.platform === 'win32') {
     // Fullscreen hides native window controls; overlays drop their caption clearance.
     const sendFullscreen = (): void => {
@@ -350,10 +367,23 @@ const ENTERPRISE_COMPACTION_ENVIRONMENT = Object.freeze({
 
 async function main(applicationIdentity: DesktopApplicationIdentity): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
+  let settings: DesktopSettings = desktopSettings
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
   const resources = runtimeResources()
+  const signedCompanies: readonly EnterpriseCompany[] = resources.enterpriseCompanies
+    ?? (resources.enterpriseServiceOrigin === undefined
+      ? [] : [legacyEnterpriseCompany(resources.enterpriseServiceOrigin, applicationIdentity.productName)])
+  const multiCompany = signedCompanies.length > 1
+  let activeCompany = multiCompany
+    ? enterpriseCompanyById(signedCompanies, desktopSettings.enterprise.activeCompanyId ?? undefined)
+    : signedCompanies[0]
+  const activeCompanyOrigin = (): string | undefined => activeCompany?.serviceOrigin ?? resources.enterpriseServiceOrigin
+  // The primary window is created before any picker or switch; seed its title from the persisted company.
+  primaryWindowCompanyTitle = multiCompany && activeCompany !== undefined
+    ? `${desktopProductName} · ${activeCompany.displayName}`
+    : undefined
   const enterprisePackages = resources.allowedHostPlugins?.filter(plugin => plugin.name.startsWith('@dsh-enterprise/')) ?? []
   const enterpriseMode = enterprisePackages.some(plugin => plugin.name === '@dsh-enterprise/harness-identity')
     && enterprisePackages.some(plugin => plugin.name === '@dsh-enterprise/harness-bundle')
@@ -386,11 +416,12 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   let hostEnvironment: NodeJS.ProcessEnv = process.env
   const prepareHostEnvironment = async (): Promise<void> => {
     const environment = await loginShell
-    hostEnvironment = resources.enterpriseServiceOrigin === undefined ? environment
+    const origin = activeCompanyOrigin()
+    hostEnvironment = origin === undefined ? environment
       : {
         ...ENTERPRISE_COMPACTION_ENVIRONMENT,
         ...environment,
-        DSH_ENTERPRISE_SERVICE_ORIGIN: resources.enterpriseServiceOrigin,
+        DSH_ENTERPRISE_SERVICE_ORIGIN: origin,
       }
   }
   let quitting = false
@@ -497,7 +528,17 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   }
   const platformView = new DesktopPlatformView(join(app.getAppPath(), 'lib', 'preload-platform-account.cjs'),
     () => locale.id === 'zh-CN' ? 'zh_CN' : 'en_US', process.platform === 'win32' ? 'win32' : 'darwin')
-  const keychainSessionStore = new KeychainSessionStore(app.getPath('userData'), safeStorage)
+  const legacySessionStore = new KeychainSessionStore(app.getPath('userData'), safeStorage)
+  let legacySessionAdopted = false
+  const companySessionStores = new Map<string, KeychainSessionStore>()
+  const sessionStoreFor = (company: EnterpriseCompany | undefined): KeychainSessionStore => {
+    if (!multiCompany || company === undefined) return legacySessionStore
+    const existing = companySessionStores.get(company.companyId)
+    if (existing !== undefined) return existing
+    const store = KeychainSessionStore.forCompany(app.getPath('userData'), company.companyId, safeStorage)
+    companySessionStores.set(company.companyId, store)
+    return store
+  }
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
     const binding = enterpriseIdentity?.beginHost()
@@ -506,11 +547,11 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
       hostInspectPort, { ...environment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
       primaryRuntime,
       resources, (next) => { if (!enterpriseMode) platformView.setSession(next) },
-      enterpriseMode ? keychainSessionStore : undefined,
+      enterpriseMode ? sessionStoreFor(activeCompany) : undefined,
       enterpriseMode ? url => shell.openExternal(url) : undefined,
       resources.allowedHostPlugins, resources.trustedHostPackages,
       binding === undefined ? undefined : state => { enterpriseIdentity?.observe(binding.epoch, state) },
-      resources.enterpriseServiceOrigin)
+      activeCompanyOrigin())
     return {
       start: async () => {
         const ready = await host.start()
@@ -595,6 +636,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   if (enterpriseMode) {
     enterpriseIdentity = new EnterpriseNativeIdentityBinding({
       userData: app.getPath('userData'),
+      expectedCompanyId: () => multiCompany ? activeCompany?.companyId : undefined,
       clear: async () => {
         hostUrl = undefined
         hostCookie = undefined
@@ -692,6 +734,31 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   const reconcileBackend = (): Promise<void> => {
     if (startup !== undefined) return startup
     const pending = (async () => {
+      if (enterpriseMode && multiCompany && !legacySessionAdopted) {
+        legacySessionAdopted = true
+        const primary = signedCompanies[0]
+        if (primary !== undefined) {
+          const adopted = await KeychainSessionStore.adoptLegacy(app.getPath('userData'), primary.companyId, safeStorage)
+            .catch((error: unknown) => {
+              console.warn('desktop enterprise: could not adopt the legacy company session', error)
+              return false
+            })
+          if (adopted && activeCompany === undefined) {
+            activeCompany = primary
+            settings = { ...settings, enterprise: { activeCompanyId: primary.companyId } }
+            writeDesktopSettings(app.getPath('userData'), settings)
+            applyCompanyWindowTitle()
+          }
+        }
+      }
+      if (enterpriseMode && multiCompany && activeCompany === undefined) {
+        const chosen = await chooseCompany()
+        if (chosen === undefined) {
+          quitting = true
+          app.quit()
+          return
+        }
+      }
       if (!enterpriseMode) await navigateMain(applicationUrl)
       await backend.start(async () => {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
@@ -1106,6 +1173,9 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
       : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
     { type: 'separator' },
     { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
+    ...enterpriseMode && multiCompany
+      ? [{ label: locale.id === 'zh-CN' ? '切换公司…' : 'Switch company…', click: () => { void switchCompany() } }]
+      : [],
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
     ...development ? [
@@ -1139,7 +1209,9 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
     try {
       tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
-        open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
+        open: () => { focusPrimaryWindow() },
+        ...(enterpriseMode && multiCompany ? { switchCompany: () => { void switchCompany() } } : {}),
+        quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
   const backgroundNotice = process.platform === 'win32'
@@ -1288,6 +1360,77 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
     }
   }
   let openingWelcome: Promise<void> | undefined
+  const applyCompanyWindowTitle = (): void => {
+    primaryWindowCompanyTitle = activeCompany === undefined
+      ? undefined : `${desktopProductName} · ${activeCompany.displayName}`
+    if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+      mainWindow.setTitle(primaryWindowCompanyTitle ?? desktopProductName)
+    }
+  }
+  let companyPickerBusy = false
+  const pickCompany = async (
+    companies: readonly EnterpriseCompany[], lastUsedId?: string,
+  ): Promise<EnterpriseCompany | undefined> => {
+    if (companyPickerBusy) return undefined
+    companyPickerBusy = true
+    try {
+      const selectedId = await openCompanyPickerWindow(locale, {
+        list: async () => Promise.all(companies.map(async company => ({
+          companyId: company.companyId,
+          displayName: company.displayName,
+          signedIn: await sessionStoreFor(company).hasSession().catch(() => false),
+          lastUsed: company.companyId === lastUsedId,
+        }))),
+      }, desktopProductName)
+      return enterpriseCompanyById(companies, selectedId)
+    } finally {
+      companyPickerBusy = false
+    }
+  }
+  const chooseCompany = async (): Promise<EnterpriseCompany | undefined> => {
+    if (!multiCompany) return signedCompanies[0]
+    const chosen = await pickCompany(signedCompanies, activeCompany?.companyId)
+    if (chosen === undefined) return undefined
+    activeCompany = chosen
+    settings = { ...settings, enterprise: { activeCompanyId: chosen.companyId } }
+    writeDesktopSettings(app.getPath('userData'), settings)
+    applyCompanyWindowTitle()
+    return chosen
+  }
+  const validateCompanyState = (state: EnterpriseIdentityState): EnterpriseIdentityState => {
+    if (!companyIdentityMatches(state, activeCompany)) {
+      throw new Error('desktop enterprise: signed-in company does not match the selected company')
+    }
+    return state
+  }
+  const switchCompany = async (): Promise<void> => {
+    if (!multiCompany || quitting) return
+    const candidates = signedCompanies.filter(company => company.companyId !== activeCompany?.companyId)
+    if (candidates.length === 0) return
+    const chosen = await pickCompany(candidates)
+    if (chosen === undefined) return
+    const confirmation = await (() => {
+      const options = {
+        type: 'warning' as const,
+        buttons: locale.id === 'zh-CN' ? ['重启并切换', '取消'] : ['Restart and switch', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+        message: locale.id === 'zh-CN' ? `切换到 ${chosen.displayName}` : `Switch to ${chosen.displayName}`,
+        detail: locale.id === 'zh-CN'
+          ? '客户端会重启，当前运行中的任务会中断。'
+          : 'The client will restart and running tasks will be interrupted.',
+      }
+      // A parentless message box resolves immediately on macOS without showing; attach it to the active shell window.
+      const parent = currentDialogWindow()
+      return parent === undefined ? dialog.showMessageBox(options) : dialog.showMessageBox(parent, options)
+    })()
+    if (confirmation.response !== 0) return
+    settings = { ...settings, enterprise: { activeCompanyId: chosen.companyId } }
+    writeDesktopSettings(app.getPath('userData'), settings)
+    app.relaunch()
+    quitWithoutConfirmation()
+  }
   const showEnterpriseWelcome = (): Promise<void> => {
     if (quitting || recovery.active) return Promise.resolve()
     if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) {
@@ -1299,11 +1442,12 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
       const operations = enterpriseWelcomeBackend
       if (operations === undefined) throw new Error('desktop enterprise welcome: backend unavailable')
       const window = await openEnterpriseWelcomeWindow(locale, {
-        read: () => operations.read(),
-        beginLogin: () => beginEnterpriseLoginAfterStorageReady(keychainSessionStore, () => operations.beginLogin()),
-        beginQrLogin: () => beginEnterpriseLoginAfterStorageReady(keychainSessionStore, () => operations.beginQrLogin()),
+        read: async () => validateCompanyState(await operations.read()),
+        beginLogin: () => beginEnterpriseLoginAfterStorageReady(sessionStoreFor(activeCompany), () => operations.beginLogin()),
+        beginQrLogin: () => beginEnterpriseLoginAfterStorageReady(sessionStoreFor(activeCompany), () => operations.beginQrLogin()),
         finishLogin: id => operations.finishLogin(id),
         onSignedIn: async state => {
+          validateCompanyState(state)
           if (state.status !== 'signed-in') throw new Error('desktop enterprise welcome: identity is signed out')
           // The Host must first select the employee's isolated native data space.
           // The identity coordinator owns workspace entry after that transaction.
@@ -1316,7 +1460,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
           }
           throw new Error('desktop enterprise welcome: employee data space was not selected')
         },
-      }, desktopProductName)
+      }, activeCompany === undefined ? desktopProductName : `${desktopProductName} · ${activeCompany.displayName}`)
       welcomeWindow = window
       window.once('closed', () => {
         if (welcomeWindow === window) welcomeWindow = undefined
@@ -1428,8 +1572,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   }
   app.on('open-url', (event, url) => {
     event.preventDefault()
-    if (url === `${applicationIdentity.externalScheme}://open`
-      || url === `${applicationIdentity.externalScheme}://open/`) focusPrimaryWindow()
+    if (isAppOpenDeepLink(applicationIdentity.externalScheme, url)) focusPrimaryWindow()
   })
 
   app.on('activate', (_event, hasVisibleWindows) => {
@@ -1486,6 +1629,7 @@ async function main(applicationIdentity: DesktopApplicationIdentity): Promise<vo
   })
 
   mainWindow = createMainWindow()
+  applyCompanyWindowTitle()
   if (typeof manifest !== 'object' || manifest === null) throw new Error('desktop policy: invalid application manifest')
   const developmentPolicy = app.isPackaged ? undefined : process.env.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG
   const policyInput: unknown = app.isPackaged

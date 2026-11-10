@@ -51,6 +51,27 @@ describe('desktop packaged edition identity', () => {
     expect(() => resolveDesktopApplicationIdentity(true, manifest, runtime, appData)).toThrow(/desktop edition/u)
   })
 
+  it('binds signed company descriptors and rejects a mismatched primary origin', () => {
+    const companies = [
+      { companyId: 'ruqinba', displayName: '如钦巴', serviceOrigin: 'https://enterprise.example.test' },
+      { companyId: 'company-b', displayName: 'B 公司', serviceOrigin: 'https://b.example.test' },
+    ] as const
+    const selected = resolveDesktopApplicationIdentity(true, { ...enterpriseManifest, dshDesktopCompanies: companies },
+      { ...enterpriseRuntime, enterpriseCompanies: companies }, appData)
+    expect(selected).toMatchObject({ edition: 'enterprise', companies })
+    expect(() => resolveDesktopApplicationIdentity(true, enterpriseManifest,
+      { ...enterpriseRuntime, enterpriseCompanies: companies }, appData))
+      .toThrow(/company lists disagree/u)
+    const mismatchedOrigin = [{ ...companies[0], serviceOrigin: 'https://other.test' }, companies[1]]
+    expect(() => resolveDesktopApplicationIdentity(true, { ...enterpriseManifest, dshDesktopCompanies: mismatchedOrigin },
+      { ...enterpriseRuntime, enterpriseCompanies: mismatchedOrigin }, appData))
+      .toThrow(/service origin/u)
+    const duplicate = [companies[0], { ...companies[1], companyId: 'ruqinba' }]
+    expect(() => resolveDesktopApplicationIdentity(true, { ...enterpriseManifest, dshDesktopCompanies: duplicate },
+      { ...enterpriseRuntime, enterpriseCompanies: duplicate }, appData))
+      .toThrow(/unique|desktop edition/u)
+  })
+
   it('rejects enterprise runtime hidden under an official marker', () => {
     expect(() => resolveDesktopApplicationIdentity(true,
       { dshDesktopEdition: 'official', dshDesktopAppId: 'com.deepseek.harness' }, enterpriseRuntime, appData))

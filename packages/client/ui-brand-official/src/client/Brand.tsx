@@ -5,6 +5,9 @@ import styles from './Brand.module.css'
 const OFFICIAL_PRODUCT_NAME = 'DeepSeek Harness'
 
 function productName(): string {
+  const runtimeTitle = (globalThis as { readonly dshDesktop?: { readonly brandTitle?: unknown } })
+    .dshDesktop?.brandTitle
+  if (typeof runtimeTitle === 'string' && runtimeTitle.length > 0) return runtimeTitle
   const configured = process.env.DSH_CLIENT_TITLE
   return configured !== undefined && configured.length > 0 ? configured : OFFICIAL_PRODUCT_NAME
 }

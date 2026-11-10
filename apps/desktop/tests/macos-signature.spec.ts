@@ -164,6 +164,34 @@ describe('desktop macOS release signature', () => {
     })
   })
 
+  it('carries signed companies and the enterprise NSIS wrapper for a Windows package', async () => {
+    const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
+    const companies = [
+      { companyId: 'company-a', displayName: 'Company A', serviceOrigin: 'https://a.example.test' },
+      { companyId: 'company-b', displayName: 'Company B', serviceOrigin: 'https://b.example.test' },
+    ]
+    const config = createElectronBuilderConfig({
+      DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_APP_ID: 'com.example.harness.enterprise',
+      DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Enterprise Workspace',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-enterprise',
+      DSH_ENTERPRISE_SERVICE_ORIGIN: companies[0]!.serviceOrigin,
+      DSH_DESKTOP_ENTERPRISE_COMPANIES: JSON.stringify(companies),
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
+      DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+      DSH_DESKTOP_UNSIGNED: '1',
+    }, 'win32', 'x64')
+    const metadata = config.extraMetadata as Record<string, unknown>
+    expect(metadata.dshDesktopCompanies).toEqual(companies)
+    expect(metadata.dshDesktopUpdateChannel).toBe('nightly')
+    expect(metadata.dshMandatoryUpdatePolicy).toBeDefined()
+    expect(portablePath(config.directories.output))
+      .toContain('/enterprise/companies/com.example.harness.enterprise/targets/win-x64/unsigned-artifacts')
+    expect(portablePath(config.nsis.include)).toMatch(/installer-include\.nsh$/u)
+    expect(readFileSync(config.nsis.include, 'utf8')).toContain('installer.nsh')
+  })
+
   it.each(['arm64', 'x64'])('builds local macOS %s DMGs without release credentials or update metadata', async (arch) => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const config = createElectronBuilderConfig({

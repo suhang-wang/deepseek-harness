@@ -6,7 +6,9 @@ import { isAbsolute, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { valid } from 'semver'
 import { DESKTOP_HOST_PACKAGE } from './core-package-set.ts'
+import { canonicalEnterpriseServiceOrigin, parseEnterpriseCompanies, type EnterpriseCompany } from './enterprise-companies.ts'
 import { parseDesktopRelease, type DesktopRelease } from './release.ts'
+export { canonicalEnterpriseServiceOrigin } from './enterprise-companies.ts'
 
 /** Descriptor at the root of the immutable Desktop resource tree. */
 export const DESKTOP_RUNTIME_FILE = 'desktop-runtime.json'
@@ -45,6 +47,8 @@ export interface DesktopRuntimeDescriptor {
   readonly allowedHostPlugins?: readonly DesktopApprovedHostPlugin[]
   /** Canonical HTTPS origin approved with the enterprise release. */
   readonly enterpriseServiceOrigin?: string
+  /** Signed companies served by this package; absent for legacy single-company releases. */
+  readonly enterpriseCompanies?: readonly EnterpriseCompany[]
   /** Complete release-owned package catalog used to verify declared Host dependency closure. */
   readonly trustedHostPackages: readonly DesktopSharedPackage[]
   readonly files: readonly DesktopRuntimeFile[]
@@ -54,16 +58,6 @@ const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/[a-z0-9][a-z0-9._~-]*|[a-z0-9]
 const ENTERPRISE_PACKAGE_SCOPE = '@dsh-enterprise/'
 const ENTERPRISE_BUNDLE_PACKAGE = '@dsh-enterprise/harness-bundle'
 const readRuntimeFile = promisify(readFile)
-
-/** Validate the exact HTTPS origin recorded in enterprise release metadata. */
-export function canonicalEnterpriseServiceOrigin(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  try {
-    const url = new URL(value)
-    return url.protocol === 'https:' && url.origin === value && url.hostname.length > 0
-      && url.username === '' && url.password === ''
-  } catch { return false }
-}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -199,7 +193,12 @@ async function inventoryRuntimeForVerification(root: string): Promise<DesktopRun
  */
 export function writeDesktopRuntime(
   root: string, release: DesktopRelease, sharedNames: readonly string[],
-  target: { platform: NodeJS.Platform; arch: string; enterpriseServiceOrigin?: string } = process,
+  target: {
+    platform: NodeJS.Platform
+    arch: string
+    enterpriseServiceOrigin?: string
+    enterpriseCompanies?: readonly EnterpriseCompany[]
+  } = process,
 ): DesktopRuntimeDescriptor {
   const sharedPackages = [...new Set(sharedNames)].sort().map((name) => {
     if (!PACKAGE_NAME.test(name)) throw new Error(`desktop runtime: invalid shared package ${name}`)
@@ -244,11 +243,20 @@ export function writeDesktopRuntime(
   if (enterpriseBundle !== undefined && !canonicalEnterpriseServiceOrigin(enterpriseServiceOrigin)) {
     throw new Error('desktop runtime: enterprise bundle requires a canonical HTTPS service origin')
   }
+  const rawCompanies = enterpriseBundle === undefined ? undefined
+    : target.enterpriseCompanies ?? (process.env.DSH_DESKTOP_ENTERPRISE_COMPANIES === undefined
+      ? undefined : JSON.parse(process.env.DSH_DESKTOP_ENTERPRISE_COMPANIES) as unknown)
+  const enterpriseCompanies = rawCompanies === undefined ? undefined : parseEnterpriseCompanies(rawCompanies)
+  if (enterpriseCompanies !== undefined
+    && (enterpriseServiceOrigin !== enterpriseCompanies[0]?.serviceOrigin)) {
+    throw new Error('desktop runtime: enterprise service origin must match the first signed company')
+  }
   const descriptor: DesktopRuntimeDescriptor = {
     schemaVersion: 1, release, platform: target.platform, arch: target.arch,
     sharedPackages, trustedHostPackages: installedPackageCatalog(root),
     ...(allowedHostPlugins === undefined ? {} : { allowedHostPlugins }),
     ...(enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin }),
+    ...(enterpriseCompanies === undefined ? {} : { enterpriseCompanies }),
     files: inventoryDesktopRuntime(root),
   }
   writeFileSync(join(root, DESKTOP_RUNTIME_FILE), `${JSON.stringify(descriptor, undefined, 2)}\n`)
@@ -284,11 +292,16 @@ export function readDesktopRuntime(root: string): DesktopRuntimeDescriptor {
   let allowedHostPlugins: readonly DesktopApprovedHostPlugin[] | undefined
   const hasEnterprisePackages = sharedPackages.some(({ name }) => name.startsWith(ENTERPRISE_PACKAGE_SCOPE))
   const hasEnterpriseBundle = sharedPackages.some(({ name }) => name === ENTERPRISE_BUNDLE_PACKAGE)
+  const enterpriseCompanies = value.enterpriseCompanies === undefined
+    ? undefined : parseEnterpriseCompanies(value.enterpriseCompanies)
   if (hasEnterpriseBundle) {
     if (!canonicalEnterpriseServiceOrigin(value.enterpriseServiceOrigin)) {
       throw new Error('desktop runtime: missing canonical HTTPS enterprise service origin')
     }
-  } else if (value.enterpriseServiceOrigin !== undefined) {
+    if (enterpriseCompanies !== undefined && value.enterpriseServiceOrigin !== enterpriseCompanies[0]?.serviceOrigin) {
+      throw new Error('desktop runtime: enterprise service origin must match the first signed company')
+    }
+  } else if (value.enterpriseServiceOrigin !== undefined || enterpriseCompanies !== undefined) {
     throw new Error('desktop runtime: unexpected enterprise service origin')
   }
   if (hasEnterprisePackages || value.allowedHostPlugins !== undefined) {
@@ -344,7 +357,8 @@ export function readDesktopRuntime(root: string): DesktopRuntimeDescriptor {
   return { schemaVersion: value.schemaVersion as 1, release, platform: value.platform as NodeJS.Platform,
     arch: value.arch, sharedPackages, trustedHostPackages,
     ...(allowedHostPlugins === undefined ? {} : { allowedHostPlugins }),
-    ...(hasEnterpriseBundle ? { enterpriseServiceOrigin: value.enterpriseServiceOrigin as string } : {}), files }
+    ...(hasEnterpriseBundle ? { enterpriseServiceOrigin: value.enterpriseServiceOrigin as string } : {}),
+    ...(enterpriseCompanies === undefined ? {} : { enterpriseCompanies }), files }
 }
 
 /**

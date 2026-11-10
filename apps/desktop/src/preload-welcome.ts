@@ -3,7 +3,7 @@ import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-acc
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { resolveDesktopLocale } from './locale.ts'
-import { ENTERPRISE_WELCOME_EVENT, ENTERPRISE_WELCOME_IPC, WELCOME_IPC, type EnterpriseLoginResult, type EnterpriseWelcomeApi, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
+import { ENTERPRISE_WELCOME_EVENT, ENTERPRISE_WELCOME_IPC, WELCOME_IPC, COMPANY_PICKER_IPC, type CompanyPickerApi, type CompanyPickerCompany, type EnterpriseLoginResult, type EnterpriseWelcomeApi, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
 import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 
 const prefix = '--dsh-welcome-locale='
@@ -12,8 +12,18 @@ if (locale === undefined) throw new Error('desktop welcome: missing window local
 const productNamePrefix = '--dsh-product-name='
 const productName = process.argv.find(argument => argument.startsWith(productNamePrefix))?.slice(productNamePrefix.length)
   ?? 'DeepSeek Harness'
-const mode = process.argv.includes('--dsh-welcome-mode=enterprise') ? 'enterprise' : 'official'
-if (mode === 'enterprise') {
+const modeArgument = process.argv.find(argument => argument.startsWith('--dsh-welcome-mode='))
+const mode = modeArgument?.slice('--dsh-welcome-mode='.length) ?? 'official'
+if (mode === 'company-picker') {
+  const companyPickerApi: CompanyPickerApi = {
+    ...resolveDesktopLocale(locale),
+    productName,
+    list: () => ipcRenderer.invoke(COMPANY_PICKER_IPC.list) as Promise<readonly CompanyPickerCompany[]>,
+    select: (companyId: string) => ipcRenderer.invoke(COMPANY_PICKER_IPC.select, companyId) as Promise<void>,
+    cancel: () => ipcRenderer.invoke(COMPANY_PICKER_IPC.cancel) as Promise<void>,
+  }
+  contextBridge.exposeInMainWorld('dshCompanyPicker', companyPickerApi)
+} else if (mode === 'enterprise') {
   const enterpriseApi: EnterpriseWelcomeApi = {
     ...resolveDesktopLocale(locale),
     mode: 'enterprise',

@@ -164,4 +164,24 @@ describe('KeychainSessionStore', () => {
     await expect(store.set('refresh', 'A'.repeat(43))).rejects.toThrow(/Stored session data is unavailable/u)
     await expect(readFile(filename, 'utf8')).resolves.toBe('not-base64-json')
   })
+
+  it('isolates company sessions and adopts a matching legacy session', async () => {
+    const { directory, safeStorage, store } = await fixture()
+    await store.saveActiveSession({
+      companyId: 'company-a', refreshToken: 'A'.repeat(43),
+      logoutCapability: 'B'.repeat(43), employeeId: 'employee-1',
+    })
+    const companyA = KeychainSessionStore.forCompany(directory, 'company-a', safeStorage)
+    const companyB = KeychainSessionStore.forCompany(directory, 'company-b', safeStorage)
+    await expect(companyA.hasSession()).resolves.toBe(false)
+    await expect(KeychainSessionStore.adoptLegacy(directory, 'company-b', safeStorage)).resolves.toBe(false)
+    await expect(KeychainSessionStore.adoptLegacy(directory, 'company-a', safeStorage)).resolves.toBe(true)
+    await expect(companyA.hasSession()).resolves.toBe(true)
+    await expect(companyA.get('company-id')).resolves.toBe('company-a')
+    await expect(companyB.hasSession()).resolves.toBe(false)
+    await expect(companyB.saveActiveSession({
+      companyId: 'company-a', refreshToken: 'C'.repeat(43),
+      logoutCapability: 'D'.repeat(43), employeeId: 'employee-1',
+    })).rejects.toThrow(/another company/u)
+  })
 })

@@ -3,6 +3,7 @@
 import { join } from 'node:path'
 import { isAbsolute } from 'node:path'
 import { resolveEnterpriseDataSpace } from './enterprise-data-space.ts'
+import { parseEnterpriseCompanies, type EnterpriseCompany } from './enterprise-companies.ts'
 import { canonicalEnterpriseServiceOrigin } from './runtime-tree.ts'
 
 const BUNDLE = '@dsh-enterprise/harness-bundle'
@@ -16,6 +17,7 @@ interface RuntimeIdentity {
   readonly sharedPackages?: readonly { readonly name: string }[]
   readonly allowedHostPlugins?: readonly { readonly name: string }[]
   readonly enterpriseServiceOrigin?: string
+  readonly enterpriseCompanies?: readonly EnterpriseCompany[]
 }
 
 interface DevelopmentIdentity {
@@ -35,6 +37,7 @@ interface EnterpriseIdentity {
   readonly externalScheme: string
   readonly appId: string
   readonly productName: string
+  readonly companies?: readonly EnterpriseCompany[]
   readonly userData: string
   readonly sessionData: string
   readonly bootstrapHome: string
@@ -51,6 +54,7 @@ function record(value: unknown): value is Record<string, unknown> {
 function enterpriseSignals(runtime: RuntimeIdentity): boolean {
   return (runtime.sharedPackages ?? []).some(packageRecord => packageRecord.name.startsWith('@dsh-enterprise/'))
     || runtime.allowedHostPlugins !== undefined || runtime.enterpriseServiceOrigin !== undefined
+    || runtime.enterpriseCompanies !== undefined
 }
 
 /**
@@ -82,8 +86,18 @@ export function resolveDesktopApplicationIdentity(
   }
   const shared = new Set(runtime.sharedPackages?.map(packageRecord => packageRecord.name))
   const allowed = new Set(runtime.allowedHostPlugins?.map(packageRecord => packageRecord.name))
+  const companies = runtime.enterpriseCompanies === undefined
+    ? undefined : parseEnterpriseCompanies(runtime.enterpriseCompanies)
+  const manifestCompanies = parseEnterpriseCompanies(manifest.dshDesktopCompanies)
+  if ((manifestCompanies === undefined) !== (companies === undefined)
+    || (manifestCompanies !== undefined && companies !== undefined
+      && JSON.stringify(manifestCompanies) !== JSON.stringify(companies))) {
+    throw new Error('desktop edition: manifest and runtime company lists disagree')
+  }
   if (!shared.has(BUNDLE) || !shared.has(IDENTITY) || !allowed.has(BUNDLE) || !allowed.has(IDENTITY)
-    || !canonicalEnterpriseServiceOrigin(runtime.enterpriseServiceOrigin)) {
+    || (companies === undefined
+      ? !canonicalEnterpriseServiceOrigin(runtime.enterpriseServiceOrigin)
+      : runtime.enterpriseServiceOrigin !== companies[0]?.serviceOrigin)) {
     throw new Error('desktop edition: incomplete enterprise bundle, identity or service origin')
   }
   if (!isAbsolute(appData)) throw new Error('desktop edition: Electron appData path must be absolute')
@@ -94,7 +108,9 @@ export function resolveDesktopApplicationIdentity(
   }
   const userData = join(appData, appId)
   return Object.freeze({
-    edition: 'enterprise', externalScheme, appId, productName, userData,
+    edition: 'enterprise', externalScheme, appId, productName,
+    ...(companies === undefined ? {} : { companies }),
+    userData,
     sessionData: join(userData, 'session'),
     bootstrapHome: resolveEnterpriseDataSpace(userData, null).home,
   })

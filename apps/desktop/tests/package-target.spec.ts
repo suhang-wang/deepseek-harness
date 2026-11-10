@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   desktopElectronBuilderArguments,
@@ -79,6 +82,49 @@ describe('desktop package target', () => {
       'mac-x64', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
       '--enterprise-service-origin', 'https://api.example.test',
     ], 'darwin', 'arm64')).toThrow(/enterprise packaging supports mac-arm64 and win-x64 only/u)
+  })
+
+  it('parses a company list from an enterprise profile', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-multi-profile-'))
+    try {
+      const profile = join(directory, 'profile.json')
+      const companies = [
+        { companyId: 'ruqinba', displayName: '如钦巴', serviceOrigin: 'https://a.example.test' },
+        { companyId: 'company-b', displayName: 'B 公司', serviceOrigin: 'https://b.example.test' },
+      ]
+      writeFileSync(profile, JSON.stringify({ appId: 'com.example.multi', productName: '企业工作台',
+        protocolScheme: 'example-multi', serviceOrigin: companies[0]!.serviceOrigin, companies }))
+      expect(parseDesktopPackageInvocation([
+        'mac-arm64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+        '--enterprise-profile', profile,
+      ], 'darwin', 'arm64').enterprise?.companies).toEqual(companies)
+
+      writeFileSync(profile, JSON.stringify({ appId: 'com.example.legacy', productName: 'Legacy Harness',
+        protocolScheme: 'legacy-harness', serviceOrigin: 'https://legacy.example.test' }))
+      const legacy = parseDesktopPackageInvocation([
+        'mac-arm64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+        '--enterprise-profile', profile,
+      ], 'darwin', 'arm64')
+      expect(legacy.enterprise?.serviceOrigin).toBe('https://legacy.example.test')
+      expect(legacy.enterprise?.companies).toBeUndefined()
+
+      writeFileSync(profile, JSON.stringify({ appId: 'com.example.multi', productName: '企业工作台',
+        protocolScheme: 'example-multi', serviceOrigin: companies[0]!.serviceOrigin,
+        companies: [companies[0], { ...companies[1], companyId: 'ruqinba' }] }))
+      expect(() => parseDesktopPackageInvocation([
+        'mac-arm64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+        '--enterprise-profile', profile,
+      ], 'darwin', 'arm64')).toThrow(/unique/u)
+
+      writeFileSync(profile, JSON.stringify({ appId: 'com.example.multi', productName: '企业工作台',
+        protocolScheme: 'example-multi', serviceOrigin: 'https://other.example.test', companies }))
+      expect(() => parseDesktopPackageInvocation([
+        'mac-arm64', '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+        '--enterprise-profile', profile,
+      ], 'darwin', 'arm64')).toThrow(/first company/u)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('parses a build version, including the separator a pnpm run script forwards', () => {

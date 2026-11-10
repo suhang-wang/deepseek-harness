@@ -51,7 +51,14 @@ const harness = await vi.hoisted(async () => {
   let quitCompleted = deferred()
   let policyBlocked = deferred()
   let embeddedPolicy: unknown
-  let runtimeDescriptor: { release: { version: string }; sharedPackages?: readonly { readonly name: string }[]; allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]; trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]; enterpriseServiceOrigin?: string } | undefined
+  let runtimeDescriptor: {
+    release: { version: string }
+    sharedPackages?: readonly { readonly name: string }[]
+    allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+    trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+    enterpriseServiceOrigin?: string
+    enterpriseCompanies?: readonly { readonly companyId: string; readonly displayName: string; readonly serviceOrigin: string }[]
+  } | undefined
   let runtimeReadFailure: Error | undefined
   let closeWindowsOnQuit = false
   let updateState: DesktopUpdateState = { phase: 'idle' }
@@ -435,6 +442,7 @@ vi.mock('../src/welcome-window.ts', async importOriginal => ({
     return window
   },
 }))
+vi.mock('../src/company-window.ts', () => ({ openCompanyPickerWindow: vi.fn(async () => undefined) }))
 
 function configureTestAuthPopup(allow: boolean): void {
   const directory = join(harness.app.getPath('userData'), 'desktop')
@@ -458,6 +466,15 @@ function applicationMenuItems(): MenuItemConstructorOptions[] {
   const sender = harness.windows[0]!.webContents
   void harness.handlers.get(DESKTOP_IPC.windowsMenu)!({ sender, senderFrame: sender.mainFrame }, 'application', 0, 0)
   return harness.menu.mock.lastCall![0]
+}
+
+function findSwitch(items: readonly MenuItemConstructorOptions[]): MenuItemConstructorOptions | undefined {
+  for (const item of items) {
+    if (item.label?.includes('Switch company') || item.label?.includes('切换公司')) return item
+    const nested = Array.isArray(item.submenu) ? findSwitch(item.submenu) : undefined
+    if (nested !== undefined) return nested
+  }
+  return undefined
 }
 
 beforeEach(() => {
@@ -657,6 +674,133 @@ describe('desktop main startup', () => {
     second.onEnterpriseIdentity!({ status: 'signed-in', ...identity, generation: 1, pendingRevocation: false })
     await vi.advanceTimersByTimeAsync(0)
     expect(harness.hosts).toHaveLength(2)
+  })
+
+  it('starts the Host with the persisted active company origin', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'dsh-enterprise-company-'))
+    onTestFinished(() => { rmSync(appRoot, { recursive: true, force: true }) })
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity']
+      .map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    const companyA = { companyId: 'company-a', displayName: 'A 公司', serviceOrigin: 'https://a.example.test' }
+    const companyB = { companyId: 'company-b', displayName: 'B 公司', serviceOrigin: 'https://b.example.test' }
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+      dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local',
+      dshDesktopCompanies: [companyA, companyB] }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: allowed, trustedHostPackages: allowed,
+      enterpriseServiceOrigin: companyA.serviceOrigin, enterpriseCompanies: [companyA, companyB] }
+    const settingsDirectory = join(harness.app.getPath('appData'), 'com.deepseek.harness.enterprise.local', 'desktop')
+    mkdirSync(settingsDirectory, { recursive: true })
+    writeFileSync(join(settingsDirectory, 'settings.json'), JSON.stringify({
+      updates: { allowTestAuthPopupWindow: false }, enterprise: { activeCompanyId: companyB.companyId },
+    }))
+    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    harness.prepared.resolve()
+    await harness.hostStarted.promise
+    expect(harness.hosts[0]!.enterpriseServiceOrigin).toBe(companyB.serviceOrigin)
+    expect(harness.hosts[0]!.environment?.DSH_ENTERPRISE_SERVICE_ORIGIN).toBe(companyB.serviceOrigin)
+    expect(harness.windows[0]!.setTitle).toHaveBeenCalledWith(`DeepSeek Harness · ${companyB.displayName}`)
+    const primary = harness.windows.find(window =>
+      (window.options.webPreferences as { webviewTag?: boolean } | undefined)?.webviewTag === true)
+    expect((primary?.options.webPreferences as { additionalArguments?: readonly string[] } | undefined)
+      ?.additionalArguments).toContain(`--dsh-brand-title=DeepSeek Harness · ${companyB.displayName}`)
+  })
+
+  it('asks for a company before starting the Host and quits when cancelled', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'dsh-enterprise-picker-'))
+    onTestFinished(() => { rmSync(appRoot, { recursive: true, force: true }) })
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity']
+      .map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    const companyA = { companyId: 'company-a', displayName: 'A 公司', serviceOrigin: 'https://a.example.test' }
+    const companyB = { companyId: 'company-b', displayName: 'B 公司', serviceOrigin: 'https://b.example.test' }
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+      dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local',
+      dshDesktopCompanies: [companyA, companyB] }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: allowed, trustedHostPackages: allowed,
+      enterpriseServiceOrigin: companyA.serviceOrigin, enterpriseCompanies: [companyA, companyB] }
+    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+    const picker = await import('../src/company-window.ts')
+    vi.mocked(picker.openCompanyPickerWindow).mockResolvedValue(undefined)
+
+    await import('../src/main.ts')
+    await vi.waitFor(() => { expect(picker.openCompanyPickerWindow).toHaveBeenCalledOnce() })
+    await vi.waitFor(() => { expect(harness.app.quit).toHaveBeenCalled() })
+    expect(harness.hosts).toHaveLength(0)
+  })
+
+  it('persists the next company and relaunches from the native switch command', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'dsh-enterprise-switch-'))
+    onTestFinished(() => { rmSync(appRoot, { recursive: true, force: true }) })
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity']
+      .map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    const companyA = { companyId: 'company-a', displayName: 'A 公司', serviceOrigin: 'https://a.example.test' }
+    const companyB = { companyId: 'company-b', displayName: 'B 公司', serviceOrigin: 'https://b.example.test' }
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+      dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local',
+      dshDesktopCompanies: [companyA, companyB] }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: allowed, trustedHostPackages: allowed,
+      enterpriseServiceOrigin: companyA.serviceOrigin, enterpriseCompanies: [companyA, companyB] }
+    const settingsDirectory = join(harness.app.getPath('appData'), 'com.deepseek.harness.enterprise.local', 'desktop')
+    mkdirSync(settingsDirectory, { recursive: true })
+    const settingsPath = join(settingsDirectory, 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      updates: { allowTestAuthPopupWindow: false }, enterprise: { activeCompanyId: companyA.companyId },
+    }))
+    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+    const picker = await import('../src/company-window.ts')
+    vi.mocked(picker.openCompanyPickerWindow).mockResolvedValueOnce(companyB.companyId)
+    harness.dialog.showMessageBox.mockResolvedValue({ response: 0 })
+
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    harness.prepared.resolve()
+    await harness.hostStarted.promise
+    const switchItem = harness.menu.mock.calls
+      .map(call => findSwitch(call[0]))
+      .find(item => item !== undefined)
+    expect(switchItem).toBeDefined()
+    const click = switchItem!.click as unknown as () => void
+    click()
+    await vi.waitFor(() => { expect(harness.app.relaunch).toHaveBeenCalledOnce() })
+    const confirmation = harness.dialog.showMessageBox.mock.calls.at(-1) as
+      [unknown, { message: string; detail: string }] | undefined
+    expect(confirmation?.[0]).toBe(harness.windows[0])
+    expect(confirmation?.[1].message ?? '').toContain(companyB.displayName)
+    expect(confirmation?.[1].detail ?? '').toMatch(/interrupted|中断/u)
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8')) as { enterprise: { activeCompanyId: string } }
+    expect(saved.enterprise.activeCompanyId).toBe(companyB.companyId)
+  })
+
+  it('keeps a single-company package on the legacy path without a picker or switch command', async () => {
+    const appRoot = mkdtempSync(join(tmpdir(), 'dsh-enterprise-single-'))
+    onTestFinished(() => { rmSync(appRoot, { recursive: true, force: true }) })
+    const allowed = ['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity']
+      .map(name => ({ name, version: '1.0.0', path: `node_modules/${name}` }))
+    const origin = 'https://enterprise.example.test'
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ name: 'desktop-test-app', version: '1.0.0',
+      dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local' }))
+    harness.runtimeDescriptor = { release: { version: '1.0.0' }, sharedPackages: allowed,
+      allowedHostPlugins: allowed, trustedHostPackages: allowed, enterpriseServiceOrigin: origin }
+    vi.spyOn(harness.app, 'getAppPath').mockReturnValue(appRoot)
+    const picker = await import('../src/company-window.ts')
+
+    await import('../src/main.ts')
+    await harness.preparing.promise
+    harness.prepared.resolve()
+    await harness.hostStarted.promise
+    expect(picker.openCompanyPickerWindow).not.toHaveBeenCalled()
+    expect(harness.hosts[0]!.enterpriseServiceOrigin).toBe(origin)
+    expect(harness.windows[0]!.setTitle).toHaveBeenCalledWith('DeepSeek Harness')
+    const primary = harness.windows.find(window =>
+      (window.options.webPreferences as { webviewTag?: boolean } | undefined)?.webviewTag === true)
+    expect((primary?.options.webPreferences as { additionalArguments?: readonly string[] } | undefined)
+      ?.additionalArguments).toBeUndefined()
+    expect(harness.menu.mock.calls.map(call => findSwitch(call[0])).find(item => item !== undefined)).toBeUndefined()
   })
 
   it('fails closed when the packaged runtime descriptor is missing or invalid', async () => {

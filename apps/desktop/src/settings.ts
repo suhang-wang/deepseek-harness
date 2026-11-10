@@ -2,13 +2,16 @@
  * Local Electron shell settings, loaded once per process independently of the Host.
  * Ownership: .agents/notes/implemented/architecture/2026-10-08-desktop-shell-configuration.md.
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Resolved shell preferences; absent fields use the defaults without rewriting existing files. */
 export interface DesktopSettings {
   readonly updates: {
     readonly allowTestAuthPopupWindow: boolean
+  }
+  readonly enterprise: {
+    readonly activeCompanyId: string | null
   }
 }
 
@@ -24,7 +27,7 @@ function record(value: unknown): value is Record<string, unknown> {
 export function readDesktopSettings(userData: string): DesktopSettings {
   const directory = join(userData, 'desktop')
   const path = join(directory, 'settings.json')
-  const defaults: DesktopSettings = { updates: { allowTestAuthPopupWindow: false } }
+  const defaults: DesktopSettings = { updates: { allowTestAuthPopupWindow: false }, enterprise: { activeCompanyId: null } }
   try {
     let raw: string
     try { raw = readFileSync(path, 'utf8') } catch (error) {
@@ -37,14 +40,23 @@ export function readDesktopSettings(userData: string): DesktopSettings {
       raw = readFileSync(path, 'utf8')
     }
     const value: unknown = JSON.parse(raw)
-    if (!record(value) || (value.updates !== undefined && !record(value.updates))) {
-      throw new Error('expected a JSON object with an optional updates object')
+    if (!record(value) || (value.updates !== undefined && !record(value.updates))
+      || (value.enterprise !== undefined && !record(value.enterprise))) {
+      throw new Error('expected a JSON object with optional updates and enterprise objects')
     }
     const allow = value.updates?.allowTestAuthPopupWindow
     if (allow !== undefined && typeof allow !== 'boolean') {
       throw new Error('updates.allowTestAuthPopupWindow must be true or false')
     }
-    return { updates: { allowTestAuthPopupWindow: allow ?? false } }
+    const activeCompanyId = value.enterprise?.activeCompanyId
+    if (activeCompanyId !== undefined && activeCompanyId !== null
+      && (typeof activeCompanyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(activeCompanyId))) {
+      throw new Error('enterprise.activeCompanyId must be a company identifier or null')
+    }
+    return {
+      updates: { allowTestAuthPopupWindow: allow ?? false },
+      enterprise: { activeCompanyId: activeCompanyId ?? null },
+    }
   } catch (error) {
     try {
       console.warn(`desktop settings: ${path}: using defaults because settings could not be loaded`, error)
@@ -54,4 +66,26 @@ export function readDesktopSettings(userData: string): DesktopSettings {
     }
     return defaults
   }
+}
+
+/**
+ * Replace the shell settings document atomically.
+ * @param userData - Electron's userData directory.
+ * @param settings - Complete resolved settings document.
+ */
+export function writeDesktopSettings(userData: string, settings: DesktopSettings): void {
+  const directory = join(userData, 'desktop')
+  const path = join(directory, 'settings.json')
+  const temporary = `${path}.${process.pid}.tmp`
+  let existing: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (record(parsed)) existing = parsed
+  } catch (_error) {
+    // A missing or unreadable document is replaced by the resolved settings.
+  }
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  writeFileSync(temporary, `${JSON.stringify({ ...existing, updates: settings.updates, enterprise: settings.enterprise }, null, 2)}\n`,
+    { flag: 'wx', mode: 0o600 })
+  renameSync(temporary, path)
 }

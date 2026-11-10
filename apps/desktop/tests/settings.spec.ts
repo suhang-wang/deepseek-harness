@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest'
-import { readDesktopSettings } from '../src/settings.ts'
+import { readDesktopSettings, writeDesktopSettings } from '../src/settings.ts'
 
 vi.mock('node:fs', async importOriginal => ({ ...await importOriginal<typeof import('node:fs')>() }))
 
@@ -22,8 +22,8 @@ it('creates a discoverable default file on first launch without touching other p
   const { userData, path } = fixture()
   rmSync(join(userData, 'desktop'), { recursive: true })
   writeFileSync(join(userData, 'keybindings.json'), 'existing shortcuts\n')
-  expect(readDesktopSettings(userData)).toEqual({ updates: { allowTestAuthPopupWindow: false } })
-  expect(readFileSync(path, 'utf8')).toBe('{\n  "updates": {\n    "allowTestAuthPopupWindow": false\n  }\n}\n')
+  expect(readDesktopSettings(userData)).toEqual({ updates: { allowTestAuthPopupWindow: false }, enterprise: { activeCompanyId: null } })
+  expect(readFileSync(path, 'utf8')).toBe('{\n  "updates": {\n    "allowTestAuthPopupWindow": false\n  },\n  "enterprise": {\n    "activeCompanyId": null\n  }\n}\n')
   expect(readFileSync(join(userData, 'keybindings.json'), 'utf8')).toBe('existing shortcuts\n')
 })
 
@@ -80,4 +80,18 @@ it('continues with defaults even when warning output fails', () => {
   vi.mocked(console.warn).mockImplementation(() => { throw new Error('output unavailable') })
   expect(readDesktopSettings(userData).updates.allowTestAuthPopupWindow).toBe(false)
   expect(readFileSync(path, 'utf8')).toBe('{')
+})
+
+it('writes the active company atomically while preserving unknown document fields', () => {
+  const { userData, path } = fixture()
+  writeFileSync(path, JSON.stringify({ custom: 'keep', updates: { allowTestAuthPopupWindow: true } }))
+  writeDesktopSettings(userData, {
+    updates: { allowTestAuthPopupWindow: false },
+    enterprise: { activeCompanyId: 'company-b' },
+  })
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+    custom: 'keep',
+    updates: { allowTestAuthPopupWindow: false },
+    enterprise: { activeCompanyId: 'company-b' },
+  })
 })

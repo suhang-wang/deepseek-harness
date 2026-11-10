@@ -1,6 +1,6 @@
 /** Encrypted persistence for enterprise desktop identity credentials. */
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
 export type DesktopSessionSecretKey = 'refresh' | 'logout-capability' | 'employee-id' | 'company-id' | 'revocation-queue'
@@ -40,8 +40,44 @@ export class KeychainSessionStore {
     private readonly encryption: KeychainEncryption,
     private readonly platform = process.platform,
     private readonly operationTimeoutMs = KEYCHAIN_OPERATION_TIMEOUT_MS,
+    directory?: string,
+    private readonly boundCompanyId?: string,
   ) {
-    this.filename = join(userData, SESSION_FILE)
+    this.filename = join(userData, directory ?? '', SESSION_FILE)
+  }
+
+  /** Create the isolated store for one company workspace. */
+  static forCompany(
+    userData: string, companyId: string, encryption: KeychainEncryption, platform = process.platform,
+  ): KeychainSessionStore {
+    if (!/^[A-Za-z0-9_-]{1,128}$/u.test(companyId)) throw new TypeError('enterprise session: invalid company identifier')
+    const directory = join('enterprise-sessions', createHash('sha256').update(companyId).digest('hex'))
+    return new KeychainSessionStore(userData, encryption, platform, KEYCHAIN_OPERATION_TIMEOUT_MS, directory, companyId)
+  }
+
+  /** @returns whether this workspace has a stored refresh credential. */
+  hasSession(): Promise<boolean> {
+    return this.serial(async () => (await this.readRecords())['refresh'] !== undefined)
+  }
+
+  /**
+   * Move a pre-multi-company session into the matching company workspace.
+   * @param userData - Electron's userData directory.
+   * @param companyId - Company that owns the legacy credential.
+   * @param encryption - Electron safeStorage API.
+   * @returns whether the legacy session belonged to the company and was adopted.
+   */
+  static async adoptLegacy(
+    userData: string, companyId: string, encryption: KeychainEncryption,
+  ): Promise<boolean> {
+    const legacy = new KeychainSessionStore(userData, encryption)
+    if (!await legacy.hasSession()) return false
+    const storedCompanyId = await legacy.get('company-id')
+    if (storedCompanyId !== companyId) return false
+    const target = KeychainSessionStore.forCompany(userData, companyId, encryption)
+    await mkdir(dirname(target.filename), { recursive: true, mode: 0o700 })
+    await rename(legacy.filename, target.filename)
+    return true
   }
 
   /** Exercise the OS-backed encryptor before redeeming a one-time browser login. */
@@ -105,6 +141,9 @@ export class KeychainSessionStore {
   /** Atomically replaces active credentials while retaining pending revocations. */
   saveActiveSession(session: ActiveDesktopSession): Promise<void> {
     return this.serial(async () => {
+      if (this.boundCompanyId !== undefined && session.companyId !== this.boundCompanyId) {
+        throw new Error('Enterprise session belongs to another company.')
+      }
       this.validateValue('refresh', session.refreshToken)
       this.validateValue('logout-capability', session.logoutCapability)
       this.validateValue('employee-id', session.employeeId)
@@ -242,6 +281,10 @@ export class KeychainSessionStore {
       const decrypted = await this.keychainOperation(() => this.encryption.decryptStringAsync(Buffer.from(encrypted, 'base64')))
       const parsed: unknown = JSON.parse(decrypted.result)
       const records = this.parseRecords(parsed)
+      if (this.boundCompanyId !== undefined && records['company-id'] !== undefined
+        && records['company-id'] !== this.boundCompanyId) {
+        throw new Error('Enterprise session belongs to another company.')
+      }
       if (decrypted.shouldReEncrypt) await this.writeRecords(records)
       return records
     } catch {

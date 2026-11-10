@@ -10,6 +10,7 @@ import { apply as hostApply } from '../src/index.ts'
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 const HOLES = [
@@ -87,6 +88,17 @@ describe('official browser-brand plugin', () => {
     const mark = render(<OfficialBrandMark size={32} />)
     expect(mark.container.textContent).toBe('R')
     expect(mark.container.querySelector('span')?.style.width).toBe('32px')
+  })
+
+  it('prefers the host company title over the compiled build title', () => {
+    vi.stubEnv('DSH_CLIENT_TITLE', '企业工作台')
+    vi.stubGlobal('dshDesktop', { brandTitle: '企业工作台 · B 公司' })
+    const name = render(<OfficialBrandName />)
+    expect(name.container.textContent).toBe('企业工作台 · B 公司')
+    name.unmount()
+
+    const mark = render(<OfficialBrandMark size={32} />)
+    expect(mark.container.textContent).toBe('企')
   })
 
   it('renders the official name independently from both requested mark sizes', () => {

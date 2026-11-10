@@ -35,6 +35,21 @@ describe('desktop auto-update environment', () => {
       DOWNLOAD_TEST_COS_BUCKET: 'official-bucket' }, 'darwin', 'arm64'))
       .toThrow(/enterprise upload requires/u)
   })
+  it('keeps custom enterprise app IDs on separate feeds from legacy and official packages', () => {
+    const base = { DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com', DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID }
+    const multi = resolveDesktopAutoUpdateConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.ruqinba.multi' }, 'darwin', 'arm64')
+    const single = resolveDesktopAutoUpdateConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.ruqinba.single' }, 'darwin', 'arm64')
+    const legacy = resolveDesktopAutoUpdateConfig({ ...base,
+      DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local' }, 'darwin', 'arm64')
+    const official = resolveDesktopAutoUpdateConfig({ DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+      DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com' }, 'darwin', 'arm64')
+    expect(multi.keyPrefix).toBe(`dsh-enterprise/com.ruqinba.multi/${RELEASE_ID}/feeds/mac-arm64`)
+    expect(multi.keyPrefix).not.toBe(single.keyPrefix)
+    expect(legacy.keyPrefix).toBe(`dsh-enterprise/${RELEASE_ID}/feeds/mac-arm64`)
+    expect(official.keyPrefix).toBe(`dsh-desk/${RELEASE_ID}/feeds/mac-arm64`)
+  })
+
   it.each([undefined, 'test'])('requires a release ID for deployment %s', (deployment) => {
     const environment = { DSH_DESKTOP_AUTO_UPDATE_ENV: deployment, DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com',
       DOWNLOAD_TEST_COS_BUCKET: 'test-bucket' }

@@ -5,8 +5,8 @@ import type { EnterpriseIdentityState } from '../src/enterprise-identity-state.t
 
 const userData = resolve('/tmp/dsh-enterprise-native-binding')
 
-function signedIn(employeeId: string, generation = 1): EnterpriseIdentityState {
-  return { status: 'signed-in', companyId: 'company', employeeId, generation, pendingRevocation: false }
+function signedIn(employeeId: string, generation = 1, companyId = 'company'): EnterpriseIdentityState {
+  return { status: 'signed-in', companyId, employeeId, generation, pendingRevocation: false }
 }
 
 function deferred() {
@@ -22,6 +22,7 @@ function fixture(overrides: {
   start?: () => Promise<void>
   reload?: () => Promise<void>
   onFailure?: (error: unknown) => void
+  expectedCompanyId?: () => string | undefined
 } = {}) {
   const events: string[] = []
   let startup: Promise<void> | undefined
@@ -29,6 +30,7 @@ function fixture(overrides: {
   const failures: unknown[] = []
   const binding = new EnterpriseNativeIdentityBinding({
     userData,
+    ...(overrides.expectedCompanyId === undefined ? {} : { expectedCompanyId: overrides.expectedCompanyId }),
     clear: async () => { events.push('clear'); await overrides.clear?.() },
     stop: async () => { events.push('stop'); await overrides.stop?.() },
     prepare: async (space) => { events.push(`prepare:${space.identity?.employeeId ?? 'bootstrap'}`) },
@@ -54,6 +56,16 @@ describe('enterprise native identity binding', () => {
     expect(binding.switching).toBe(false)
     expect(binding.beginHost()).toEqual({ epoch: 1, space: binding.currentSpace })
     expect(binding.beginHost().epoch).toBe(2)
+  })
+
+  it('rejects a signed-in identity from another company before switching', () => {
+    const f = fixture({ expectedCompanyId: () => 'company' })
+    f.binding.observe(f.binding.beginHost().epoch, signedIn('alice', 1, 'other-company'))
+    expect(f.failures).toHaveLength(1)
+    expect(f.failures[0]).toBeInstanceOf(Error)
+    expect(f.binding.switching).toBe(true)
+    expect(f.binding.currentSpace.identity).toBeNull()
+    expect(f.events).toEqual([])
   })
 
   it('fences admission immediately and waits for previous startup without awaiting itself', async () => {

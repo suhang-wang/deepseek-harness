@@ -209,6 +209,11 @@ interface DesktopPackageInvocation {
   readonly enterprise: {
     readonly packagesRoot: string
     readonly serviceOrigin: string
+    readonly companies?: readonly {
+      readonly companyId: string
+      readonly displayName: string
+      readonly serviceOrigin: string
+    }[]
     readonly appId?: string
     readonly protocolScheme?: string
     readonly productName?: string
@@ -230,6 +235,46 @@ interface EnterprisePackageProfile {
   readonly protocolScheme: string
   readonly productName: string
   readonly serviceOrigin: string
+  readonly companies?: readonly {
+    readonly companyId: string
+    readonly displayName: string
+    readonly serviceOrigin: string
+  }[]
+}
+
+function profileCompanies(value: unknown): EnterprisePackageProfile['companies'] {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length < 1 || value.length > 2) {
+    throw new Error('desktop package: enterprise profile companies must contain one or two entries')
+  }
+  const companies = value.map((entry: unknown, index: number) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new Error(`desktop package: enterprise company ${index} must be an object`)
+    }
+    const fields = entry as Record<string, unknown>
+    if (Object.keys(fields).sort().join(',') !== 'companyId,displayName,serviceOrigin') {
+      throw new Error(`desktop package: enterprise company ${index} must contain only companyId, displayName and serviceOrigin`)
+    }
+    const companyId = fields['companyId']
+    const displayName = fields['displayName']
+    const serviceOrigin = fields['serviceOrigin']
+    if (typeof companyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(companyId)) {
+      throw new Error(`desktop package: enterprise company ${index} has an invalid companyId`)
+    }
+    if (typeof displayName !== 'string' || displayName.length < 1 || displayName.length > 64
+      || /[\u0000-\u001f\u007f]/u.test(displayName)) {
+      throw new Error(`desktop package: enterprise company ${index} has an invalid displayName`)
+    }
+    if (typeof serviceOrigin !== 'string') {
+      throw new Error(`desktop package: enterprise company ${index} has an invalid serviceOrigin`)
+    }
+    return { companyId, displayName, serviceOrigin: enterpriseServiceOrigin(serviceOrigin) }
+  })
+  if (new Set(companies.map(company => company.companyId)).size !== companies.length
+    || new Set(companies.map(company => company.serviceOrigin)).size !== companies.length) {
+    throw new Error('desktop package: enterprise company identifiers and origins must be unique')
+  }
+  return companies
 }
 
 function readEnterprisePackageProfile(path: string): EnterprisePackageProfile {
@@ -243,9 +288,18 @@ function readEnterprisePackageProfile(path: string): EnterprisePackageProfile {
     throw new Error('desktop package: enterprise profile must be a JSON object')
   }
   const fields = parsed as Record<string, unknown>
-  if (Object.keys(fields).sort().join(',') !== 'appId,productName,protocolScheme,serviceOrigin'
-    || Object.values(fields).some(value => typeof value !== 'string' || value.length === 0)) {
-    throw new Error('desktop package: enterprise profile requires only appId, productName, protocolScheme and serviceOrigin')
+  const keys = Object.keys(fields).sort().join(',')
+  if (keys !== 'appId,companies,productName,protocolScheme,serviceOrigin'
+    && keys !== 'appId,productName,protocolScheme,serviceOrigin') {
+    throw new Error('desktop package: enterprise profile requires appId, productName, protocolScheme, serviceOrigin and optional companies')
+  }
+  if (['appId', 'productName', 'protocolScheme', 'serviceOrigin'].some(name => typeof fields[name] !== 'string' || (fields[name] as string).length === 0)) {
+    throw new Error('desktop package: enterprise profile requires non-empty identity fields')
+  }
+  const companies = profileCompanies(fields['companies'])
+  const primaryOrigin = enterpriseServiceOrigin(fields['serviceOrigin'] as string)
+  if (companies !== undefined && companies[0]!.serviceOrigin !== primaryOrigin) {
+    throw new Error('desktop package: enterprise profile serviceOrigin must match the first company')
   }
   resolveDesktopPackageIdentity({
     DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_UNSIGNED: '1',
@@ -257,7 +311,8 @@ function readEnterprisePackageProfile(path: string): EnterprisePackageProfile {
     appId: fields.appId as string,
     productName: fields.productName as string,
     protocolScheme: fields.protocolScheme as string,
-    serviceOrigin: enterpriseServiceOrigin(fields.serviceOrigin as string),
+    serviceOrigin: primaryOrigin,
+    ...(companies === undefined ? {} : { companies }),
   }
 }
 
@@ -349,6 +404,7 @@ export function parseDesktopPackageInvocation(
       serviceOrigin: profile?.serviceOrigin ?? enterpriseServiceOrigin(values['enterprise-service-origin']!),
       ...(profile === undefined ? {} : {
         appId: profile.appId, protocolScheme: profile.protocolScheme, productName: profile.productName,
+        ...(profile.companies === undefined ? {} : { companies: profile.companies }),
       }),
     } : undefined,
   }
@@ -451,9 +507,13 @@ async function main(): Promise<void> {
   delete environment.DSH_DESKTOP_ENTERPRISE_MODE
   delete environment.DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME
   delete environment.DSH_ENTERPRISE_SERVICE_ORIGIN
+  delete environment.DSH_DESKTOP_ENTERPRISE_COMPANIES
   if (invocation.enterprise !== undefined) {
     environment.DSH_DESKTOP_ENTERPRISE_MODE = '1'
     environment.DSH_ENTERPRISE_SERVICE_ORIGIN = invocation.enterprise.serviceOrigin
+    if (invocation.enterprise.companies !== undefined) {
+      environment.DSH_DESKTOP_ENTERPRISE_COMPANIES = JSON.stringify(invocation.enterprise.companies)
+    }
     if (invocation.enterprise.appId !== undefined) environment.DSH_DESKTOP_APP_ID = invocation.enterprise.appId
     if (invocation.enterprise.protocolScheme !== undefined) {
       environment.DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME = invocation.enterprise.protocolScheme
@@ -551,9 +611,13 @@ export async function packageTarget(
     desktopElectronBuilderEnvironment(environment, invocation.unsigned)))
   delete buildEnv.DSH_DESKTOP_ENTERPRISE_MODE
   delete buildEnv.DSH_ENTERPRISE_SERVICE_ORIGIN
+  delete buildEnv.DSH_DESKTOP_ENTERPRISE_COMPANIES
   if (invocation.enterprise !== undefined) {
     buildEnv.DSH_DESKTOP_ENTERPRISE_MODE = '1'
     buildEnv.DSH_ENTERPRISE_SERVICE_ORIGIN = invocation.enterprise.serviceOrigin
+    if (invocation.enterprise.companies !== undefined) {
+      buildEnv.DSH_DESKTOP_ENTERPRISE_COMPANIES = JSON.stringify(invocation.enterprise.companies)
+    }
   }
   const targetEnv: NodeJS.ProcessEnv = {
     ...buildEnv,

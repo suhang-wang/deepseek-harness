@@ -10,9 +10,14 @@ import { syncWindowsAppearance } from './preload-windows.ts'
 import { installMandatoryUpdateOverlay } from './preload-mandatory-overlay.ts'
 import { createDesktopBrowserBridge } from './preload-browser.ts'
 
+const BRAND_TITLE_PREFIX = '--dsh-brand-title='
+const brandTitle = process.argv.find(argument => argument.startsWith(BRAND_TITLE_PREFIX))
+  ?.slice(BRAND_TITLE_PREFIX.length)
+
 function createProductApi(): DshDesktopProductApi {
   return {
     protocolVersion: 1,
+    ...(brandTitle === undefined || brandTitle === '' ? {} : { brandTitle }),
     browser: createDesktopBrowserBridge(),
     deviceInfo: () => ipcRenderer.invoke(DESKTOP_IPC.deviceInfo) as Promise<string>,
     keyboard: {

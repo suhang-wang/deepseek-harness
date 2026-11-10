@@ -410,3 +410,128 @@ body {
   transform-origin: top left;
   app-region: no-drag;
 }
+
+.company-picker {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+  padding: 52px 36px 28px;
+}
+
+.company-picker-header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0 0 8px;
+}
+
+.company-picker-header p {
+  color: var(--dsw-alias-label-secondary, rgba(0, 0, 0, 0.62));
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.company-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.company-option {
+  align-items: center;
+  background: var(--dsw-alias-bg-elevated, rgba(255, 255, 255, 0.72));
+  border: 1px solid var(--dsw-alias-border-secondary, rgba(0, 0, 0, 0.12));
+  border-radius: 12px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  justify-content: space-between;
+  padding: 16px 18px;
+  text-align: left;
+  width: 100%;
+}
+
+.company-option:hover:not(:disabled),
+.company-option:focus-visible {
+  border-color: var(--dsw-alias-border-emphasis, rgba(0, 0, 0, 0.32));
+  outline: none;
+}
+
+.company-option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.company-option-name {
+  font-size: 15px;
+  font-weight: 550;
+}
+
+.company-option-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.company-badge,
+.company-last-used {
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.company-badge {
+  background: rgba(52, 199, 89, 0.16);
+  color: rgb(28, 128, 58);
+}
+
+.company-last-used {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--dsw-alias-label-secondary, rgba(0, 0, 0, 0.62));
+}
+
+.company-cancel {
+  align-self: center;
+  background: none;
+  border: 0;
+  color: var(--dsw-alias-label-secondary, rgba(0, 0, 0, 0.62));
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 12px;
+}
+
+.company-cancel:hover:not(:disabled) {
+  color: inherit;
+}
+
+.company-picker-loading,
+.company-picker-error {
+  color: var(--dsw-alias-label-secondary, rgba(0, 0, 0, 0.62));
+  font-size: 13px;
+  margin: 0;
+}
+
+.company-picker-error {
+  color: rgb(196, 43, 28);
+}
+
+[data-ds-dark-theme] .company-option {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+[data-ds-dark-theme] .company-badge {
+  background: rgba(52, 199, 89, 0.2);
+  color: rgb(134, 232, 166);
+}
+
+[data-ds-dark-theme] .company-last-used {
+  background: rgba(255, 255, 255, 0.1);
+}

@@ -10,6 +10,8 @@ import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 
 /** Main-process lifecycle callbacks; the binding owns only startup promises it installs. */
 export interface EnterpriseNativeIdentityBindingOptions extends EnterpriseIdentityCoordinatorOptions {
+  /** Signed company selected for this process; signed-in identities from another company are rejected. */
+  readonly expectedCompanyId?: () => string | undefined
   /** Return the currently owned Host startup or switch operation. */
   getStartup(): Promise<void> | undefined
   /** Replace the main-process startup reference with the supplied operation. */
@@ -75,6 +77,13 @@ export class EnterpriseNativeIdentityBinding {
     const identity = state.status === 'signed-in'
       ? Object.freeze({ companyId: state.companyId, employeeId: state.employeeId })
       : null
+    const expectedCompanyId = this.options.expectedCompanyId?.()
+    if (identity !== null && expectedCompanyId !== undefined
+      && identity.companyId !== expectedCompanyId) {
+      this.failed = true
+      this.reportFailure(new Error('Enterprise Host identity does not match the active company.'))
+      return
+    }
     if (sameIdentity(identity, this.requestedIdentity)) return
     this.requestedIdentity = identity
     const previousStartup = this.options.getStartup()

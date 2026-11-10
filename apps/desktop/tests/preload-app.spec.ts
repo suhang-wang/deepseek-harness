@@ -37,6 +37,16 @@ it('exposes onboarding size activation to the application document', async () =>
   expect(electron.ipcRenderer.send.mock.calls).toEqual([[DESKTOP_IPC.onboardingActive, true], [DESKTOP_IPC.onboardingActive, false]])
 })
 
+it('exposes the company brand title supplied for the workspace', async () => {
+  vi.stubGlobal('process', {
+    ...process, isMainFrame: true, argv: [...process.argv, '--dsh-brand-title=企业工作台 · B 公司'],
+  })
+  vi.stubGlobal('location', new URL('dsh-app://app/'))
+  await import('../src/preload-app.ts')
+  const api = electron.contextBridge.exposeInMainWorld.mock.calls.find(([name]) => name === 'dshDesktop')?.[1] as DshDesktopProductApi
+  expect(api.brandTitle).toBe('企业工作台 · B 公司')
+})
+
 it('limits product documents to update status and a native confirmation action', async () => {
   vi.stubGlobal('location', new URL('dsh-app://app/index.html'))
   await import('../src/preload-app.ts')

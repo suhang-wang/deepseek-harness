@@ -77,7 +77,7 @@ export function createElectronBuilderConfig(
   // Generate a per-target NSIS include wrapper that defines INSTALLER_BUILD_DIR and
   // DSH_INSTALLER_NSH_DIR so installer.nsh resolves the assets and sibling scripts from the
   // correct directories instead of the hardcoded non-enterprise path.
-  const nsisInclude = packagesWindows
+  const nsisInclude = packagesWindows && identity.edition === 'enterprise'
     ? (() => {
         const includeWrapperPath = join(buildPaths.root, 'installer-include.nsh')
         const installerNshPath = fileURLToPath(new URL('./installer.nsh', import.meta.url))
@@ -124,6 +124,11 @@ export function createElectronBuilderConfig(
   const buildVersion = resolveDesktopBuildVersion(env, productVersion)
   if (update?.channel === 'latest' && buildVersion.includes('-')) throw new Error('desktop package: latest requires a stable version')
   const packaged = resolveDesktopBuildCommit(env)
+  let desktopCompanies
+  if (identity.edition === 'enterprise' && env.DSH_DESKTOP_ENTERPRISE_COMPANIES !== undefined) {
+    try { desktopCompanies = JSON.parse(env.DSH_DESKTOP_ENTERPRISE_COMPANIES) }
+    catch { throw new Error('desktop package: DSH_DESKTOP_ENTERPRISE_COMPANIES must be valid JSON') }
+  }
   return {
     appId,
     protocols: [{ name: identity.productName, schemes: [identity.protocolScheme] }],
@@ -135,6 +140,7 @@ export function createElectronBuilderConfig(
       dshDesktopEdition: identity.edition,
       dshDesktopProductName: identity.productName,
       ...(identity.edition === 'enterprise' ? { dshDesktopExternalScheme: identity.protocolScheme } : {}),
+      ...(desktopCompanies === undefined ? {} : { dshDesktopCompanies: desktopCompanies }),
       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
       ...buildVersion === productVersion ? {} : { version: buildVersion },

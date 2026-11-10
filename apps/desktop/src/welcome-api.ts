@@ -31,6 +31,34 @@ export const ENTERPRISE_WELCOME_EVENT = {
   confirmed: 'dsh-enterprise-welcome:confirmed',
 } as const
 
+/** Company selection channels installed only while the pre-Host picker exists. */
+export const COMPANY_PICKER_IPC = {
+  list: 'dsh-company-picker:list',
+  select: 'dsh-company-picker:select',
+  cancel: 'dsh-company-picker:cancel',
+} as const
+
+/** One signed company offered before a Host starts. */
+export interface CompanyPickerCompany {
+  readonly companyId: string
+  readonly displayName: string
+  readonly signedIn: boolean
+  readonly lastUsed: boolean
+}
+
+/** Operations available to the pre-Host company picker renderer. */
+export interface CompanyPickerApi extends DesktopLocale {
+  readonly productName: string
+  list(): Promise<readonly CompanyPickerCompany[]>
+  select(companyId: string): Promise<void>
+  cancel(): Promise<void>
+}
+
+/** Main-owned company picker operations. */
+export interface CompanyPickerOperations {
+  list(): Promise<readonly CompanyPickerCompany[]>
+}
+
 export type EnterpriseLoginResult = { readonly status: 'signed-in' | 'pending' | 'denied' | 'expired' }
 
 /** The native window receives only public identity state and an opaque attempt ID. */
