@@ -245,9 +245,13 @@ export class KeychainSessionStore {
   }
 
   private validateValue(key: DesktopSessionSecretKey, value: string): void {
-    const valid = key === 'employee-id' ? EMPLOYEE_ID_PATTERN.test(value)
-      : key === 'company-id' ? COMPANY_ID_PATTERN.test(value)
-      : key === 'revocation-queue' ? this.validQueue(value) : TOKEN_PATTERN.test(value)
+    let valid: boolean
+    switch (key) {
+      case 'employee-id': valid = EMPLOYEE_ID_PATTERN.test(value); break
+      case 'company-id': valid = COMPANY_ID_PATTERN.test(value); break
+      case 'revocation-queue': valid = this.validQueue(value); break
+      default: valid = TOKEN_PATTERN.test(value)
+    }
     if (!valid) throw new Error('Enterprise session data is invalid.')
   }
 
