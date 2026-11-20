@@ -16,6 +16,18 @@ describe('enterprise identity state parser', () => {
     expect(parseEnterpriseIdentityState(signedIn)).toEqual(signedIn)
   })
 
+  it('accepts the server employee identifier contract while company ids stay narrow', () => {
+    for (const employeeId of ['KongXiaoYang@ruqinba.com', 'zhang.san', 'a.b_c-d@e', 'x'.repeat(128)]) {
+      const state = { ...signedIn, employeeId }
+      expect(parseEnterpriseIdentityState(state)).toEqual(state)
+    }
+    for (const employeeId of ['', 'bad employee', 'a+b', 'a/b', 'a=b', 'x'.repeat(129)]) {
+      expect(parseEnterpriseIdentityState({ ...signedIn, employeeId })).toBeNull()
+    }
+    expect(parseEnterpriseIdentityState({ ...signedIn, companyId: 'company.one' })).toBeNull()
+    expect(parseEnterpriseIdentityState({ ...signedIn, companyId: 'company@one' })).toBeNull()
+  })
+
   it.each([
     null,
     'signed-out',

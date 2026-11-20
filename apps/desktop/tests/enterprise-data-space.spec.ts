@@ -46,11 +46,26 @@ describe('enterprise data space', () => {
     expect(a.home).not.toBe(sameCompanyDifferentEmployee.home)
   })
 
-  it('rejects non-absolute userData and non-base64url identifiers', () => {
+  it('rejects non-absolute userData and out-of-contract identifiers', () => {
     expect(() => resolveEnterpriseDataSpace('relative', null)).toThrow(/absolute/u)
     expect(() => resolveEnterpriseDataSpace(userData, { companyId: '', employeeId: 'employee' })).toThrow(/companyId/u)
     expect(() => resolveEnterpriseDataSpace(userData, { companyId: 'company', employeeId: 'employee=' })).toThrow(/employeeId/u)
     expect(() => resolveEnterpriseDataSpace(userData, { companyId: 'a'.repeat(129), employeeId: 'employee' })).toThrow(/companyId/u)
+    expect(() => resolveEnterpriseDataSpace(userData, { companyId: 'company', employeeId: 'a'.repeat(129) })).toThrow(/employeeId/u)
+    expect(() => resolveEnterpriseDataSpace(userData, { companyId: 'company.one', employeeId: 'employee' })).toThrow(/companyId/u)
+    expect(() => resolveEnterpriseDataSpace(userData, { companyId: 'company', employeeId: 'bad employee' })).toThrow(/employeeId/u)
+  })
+
+  it('accepts the server employee identifier contract for data-space keys', () => {
+    for (const employeeId of ['KongXiaoYang@ruqinba.com', 'zhang.san', 'a'.repeat(128)]) {
+      const identity = { companyId: 'company', employeeId }
+      const space = resolveEnterpriseDataSpace(userData, identity)
+      expect(space.identity).toEqual(identity)
+      expect(space.key).toBe(createHash('sha256').update(JSON.stringify([identity.companyId, identity.employeeId])).digest('hex'))
+    }
+    const dotted = resolveEnterpriseDataSpace(userData, { companyId: 'company', employeeId: 'zhang.san' })
+    const plain = resolveEnterpriseDataSpace(userData, { companyId: 'company', employeeId: 'zhangsan' })
+    expect(dotted.key).not.toBe(plain.key)
   })
 
   it('copies and overrides environment for a space', () => {

@@ -3,7 +3,9 @@
 import { createHash } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
 
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+// Mirrors the enterprise server's employee identifier contract.
+const EMPLOYEE_ID_PATTERN = /^[A-Za-z0-9_.@-]{1,128}$/u
 const BOOTSTRAP_KEY = 'bootstrap'
 
 /** Verified enterprise employee identity used for local data-space selection. */
@@ -25,8 +27,8 @@ export interface EnterpriseDataSpace {
 
 /** Validate and freeze an identity copy so callers cannot mutate a resolved data-space key. */
 function normalizeIdentity(identity: EnterpriseDataSpaceIdentity): EnterpriseDataSpaceIdentity {
-  if (!ID_PATTERN.test(identity.companyId)) throw new TypeError('Enterprise companyId must be 1..128 base64url characters.')
-  if (!ID_PATTERN.test(identity.employeeId)) throw new TypeError('Enterprise employeeId must be 1..128 base64url characters.')
+  if (!COMPANY_ID_PATTERN.test(identity.companyId)) throw new TypeError('Enterprise companyId must be 1..128 base64url characters.')
+  if (!EMPLOYEE_ID_PATTERN.test(identity.employeeId)) throw new TypeError('Enterprise employeeId must be 1..128 letters, digits, ".", "_", "@" or "-" characters.')
   return Object.freeze({ companyId: identity.companyId, employeeId: identity.employeeId })
 }
 

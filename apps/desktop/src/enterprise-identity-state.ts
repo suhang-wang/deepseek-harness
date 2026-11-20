@@ -1,6 +1,8 @@
 /** Public enterprise identity state reported by an approved enterprise Host plugin. */
 
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+// Mirrors the enterprise server's employee identifier contract.
+const EMPLOYEE_ID_PATTERN = /^[A-Za-z0-9_.@-]{1,128}$/u
 
 export interface EnterpriseIdentitySignedOut {
   readonly status: 'signed-out'
@@ -28,8 +30,8 @@ export function parseEnterpriseIdentityState(value: unknown): EnterpriseIdentity
   }
   if (candidate.status === 'signed-in') {
     if (!hasExactKeys(candidate, ['companyId', 'employeeId', 'generation', 'pendingRevocation', 'status'])) return null
-    if (typeof candidate.companyId !== 'string' || !ID_PATTERN.test(candidate.companyId)) return null
-    if (typeof candidate.employeeId !== 'string' || !ID_PATTERN.test(candidate.employeeId)) return null
+    if (typeof candidate.companyId !== 'string' || !COMPANY_ID_PATTERN.test(candidate.companyId)) return null
+    if (typeof candidate.employeeId !== 'string' || !EMPLOYEE_ID_PATTERN.test(candidate.employeeId)) return null
     return {
       status: 'signed-in',
       companyId: candidate.companyId,

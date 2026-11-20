@@ -38,6 +38,21 @@ describe('KeychainSessionStore', () => {
     await expect(store.get('employee-id')).resolves.toBe('employee-1')
   })
 
+  it('stores the server employee identifier contract while company ids stay narrow', async () => {
+    const { store } = await fixture()
+    for (const employeeId of ['KongXiaoYang@ruqinba.com', 'zhang.san', 'a'.repeat(128)]) {
+      await store.saveActiveSession({ companyId: 'company-1', employeeId, refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43) })
+      await expect(store.get('employee-id')).resolves.toBe(employeeId)
+    }
+    await expect(store.set('employee-id', 'bad employee')).rejects.toThrow(/invalid/u)
+    await expect(store.set('employee-id', 'a+b')).rejects.toThrow(/invalid/u)
+    await expect(store.set('employee-id', 'a'.repeat(129))).rejects.toThrow(/invalid/u)
+    await expect(store.set('company-id', 'company.one')).rejects.toThrow(/invalid/u)
+    await expect(store.saveActiveSession({ companyId: 'company-1', employeeId: 'bad employee',
+      refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43) })).rejects.toThrow(/invalid/u)
+    expect(() => KeychainSessionStore.forCompany('/tmp/unused', 'company.one', {} as never)).toThrow(/company identifier/u)
+  })
+
   it('serializes concurrent writes and removes individual values', async () => {
     const { store } = await fixture()
     await Promise.all([

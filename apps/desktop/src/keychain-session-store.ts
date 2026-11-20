@@ -21,7 +21,9 @@ export interface ActiveDesktopSession {
 }
 const SESSION_FILE = 'enterprise-session.bin'
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+// Mirrors the enterprise server's employee identifier contract.
+const EMPLOYEE_ID_PATTERN = /^[A-Za-z0-9_.@-]{1,128}$/u
 const KEYS = ['refresh', 'logout-capability', 'employee-id', 'company-id', 'revocation-queue'] as const
 const KEYCHAIN_OPERATION_TIMEOUT_MS = 8_000
 
@@ -243,7 +245,8 @@ export class KeychainSessionStore {
   }
 
   private validateValue(key: DesktopSessionSecretKey, value: string): void {
-    const valid = key === 'employee-id' || key === 'company-id' ? ID_PATTERN.test(value)
+    const valid = key === 'employee-id' ? EMPLOYEE_ID_PATTERN.test(value)
+      : key === 'company-id' ? COMPANY_ID_PATTERN.test(value)
       : key === 'revocation-queue' ? this.validQueue(value) : TOKEN_PATTERN.test(value)
     if (!valid) throw new Error('Enterprise session data is invalid.')
   }

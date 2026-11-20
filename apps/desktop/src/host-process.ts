@@ -89,10 +89,13 @@ export const QUIT_INSPECTION_DEADLINE_MS = 2_000
 
 const MAX_HOST_DIAGNOSTIC_CHARS = 64 * 1024
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+// Mirrors the enterprise server's employee identifier contract.
+const EMPLOYEE_ID_PATTERN = /^[A-Za-z0-9_.@-]{1,128}$/u
 
 function isValidSecureStoreValue(key: DesktopSessionSecretKey, value: string): boolean {
-  if (key === 'employee-id' || key === 'company-id') return ID_PATTERN.test(value)
+  if (key === 'employee-id') return EMPLOYEE_ID_PATTERN.test(value)
+  if (key === 'company-id') return COMPANY_ID_PATTERN.test(value)
   if (key === 'revocation-queue') return false
   return TOKEN_PATTERN.test(value)
 }
@@ -143,8 +146,8 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
         const session = candidate.session as Record<string, unknown>
         return Object.keys(session).length === 4 && typeof session.refreshToken === 'string' && TOKEN_PATTERN.test(session.refreshToken)
           && typeof session.logoutCapability === 'string' && TOKEN_PATTERN.test(session.logoutCapability)
-          && typeof session.employeeId === 'string' && ID_PATTERN.test(session.employeeId)
-          && typeof session.companyId === 'string' && ID_PATTERN.test(session.companyId)
+          && typeof session.employeeId === 'string' && EMPLOYEE_ID_PATTERN.test(session.employeeId)
+          && typeof session.companyId === 'string' && COMPANY_ID_PATTERN.test(session.companyId)
       }
       return false
     case 'enterprise-identity-change':

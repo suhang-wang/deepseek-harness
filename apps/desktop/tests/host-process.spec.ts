@@ -227,6 +227,72 @@ describe('desktop host process', () => {
     await host.stop(true)
   })
 
+  it.each([
+    'KongXiaoYang@ruqinba.com',
+    'zhang.san',
+  ])('applies the server employee identifier contract to session IPC: %s', async (employeeId) => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        const onMessage = message => {
+          if (message.type !== 'secure-store-response' || message.requestId !== 91) return
+          process.off('message', onMessage)
+          response.setHeader('content-type', 'application/json')
+          response.end(JSON.stringify({ success: message.success }))
+        }
+        process.on('message', onMessage)
+        process.send({ type: 'secure-store-request', requestId: 91, operation: 'save-active-session', session: { companyId: 'company-1', refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43), employeeId: ${JSON.stringify(employeeId)} } })
+      })
+      server.listen(0, '127.0.0.1', () => process.send({ type: 'ready', url: 'http://127.0.0.1:' + server.address().port }))
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const secureStore = {
+      get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined), queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, secureStore, undefined, ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST)
+    hosts.push(host)
+    const { url } = await host.start()
+    await expect((await fetch(url)).json()).resolves.toEqual({ success: true })
+    expect(secureStore.saveActiveSession).toHaveBeenCalledWith({ companyId: 'company-1', refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43), employeeId })
+    await host.stop(true)
+  })
+
+  it.each([
+    "{ companyId: 'company-1', employeeId: 'bad employee' }",
+    "{ companyId: 'company-1', employeeId: 'a+b' }",
+    "{ companyId: 'company.one', employeeId: 'employee-1' }",
+  ])('rejects out-of-contract session identifiers before dispatch: %s', async (identity) => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        process.send({ type: 'secure-store-request', requestId: 92, operation: 'save-active-session', session: { ...${identity}, refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43) } })
+        response.end('sent')
+      })
+      server.listen(0, '127.0.0.1', () => process.send({ type: 'ready', url: 'http://127.0.0.1:' + server.address().port }))
+    `)
+    let reportFailure!: (error: Error) => void
+    const failure = new Promise<Error>((resolve) => { reportFailure = resolve })
+    const secureStore = {
+      get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined), queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, reportFailure,
+      undefined, undefined, undefined, secureStore, undefined, ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST)
+    hosts.push(host)
+    const { url } = await host.start()
+    await expect(fetch(url)).rejects.toThrow()
+    expect((await failure).message).toMatch(/invalid IPC event/u)
+    expect(secureStore.saveActiveSession).not.toHaveBeenCalled()
+  })
+
   it('refuses secure credential IPC from a Host without the enterprise identity allowlist', async () => {
     const runtime = projectWithHost(`
       import { createServer } from 'node:http'
