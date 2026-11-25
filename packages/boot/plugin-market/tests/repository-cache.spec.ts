@@ -298,8 +298,8 @@ it('stops a fetch once the repository grows past its limit, and deletes the repo
 })
 
 it('refuses a repository that a completed fetch left past its limit', async () => {
-  // Distinct files make distinct trees, so the fetch adds one tree object per directory.
-  const source = repository('e2', Object.fromEntries(Array.from({ length: 1000 }, (_value, index) => [`dir${String(index)}/f.txt`, String(index)])))
+  // Incompressible blobs keep the completed partial clone above 4 KiB without a 1000-file setup.
+  const source = repository('e2', Object.fromEntries(Array.from({ length: 64 }, (_value, index) => [`dir${String(index)}/f.txt`, randomBytes(256)])))
   const repositories = cache({ maxRepositoryBytes: 4096, sizePollMs: 3_600_000 })
   await expect(repositories.read(source.url, source.commit, 'dir0/f.txt', 100, signal)).rejects.toMatchObject({ reason: 'too-large' })
   expect(readdirSync(join(root, 'cache'))).toEqual([])
