@@ -52,6 +52,52 @@ describe('desktop package-set selection', () => {
     ])
   })
 
+  it.each([{ platform: 'win32', arch: 'x64' }, { platform: 'darwin', arch: 'arm64' }] as const)
+  ('adds the enterprise closure with target-filtered optional packages for %j', (target) => {
+    const available = new Map<string, PackedDesktopPackage>([
+      ['@deepseek-ai/dsh', packed('@deepseek-ai/dsh')],
+      ['@deepseek-ai/dsh-desktop-host', packed('@deepseek-ai/dsh-desktop-host')],
+      ['@dsh-enterprise/harness-bundle', packed('@dsh-enterprise/harness-bundle', {
+        dependencies: { '@dsh-enterprise/harness-identity': '0.1.0', '@dsh-enterprise/harness-provider': '0.1.0', '@dsh-enterprise/harness-ui': '0.1.0' },
+        optionalDependencies: { '@deepseek-ai/dsh-cua-macos': '1.0.0' },
+      })],
+      ['@dsh-enterprise/harness-identity', packed('@dsh-enterprise/harness-identity')],
+      ['@dsh-enterprise/harness-provider', packed('@dsh-enterprise/harness-provider')],
+      ['@dsh-enterprise/harness-ui', packed('@dsh-enterprise/harness-ui')],
+      ['@deepseek-ai/dsh-cua-macos', packed('@deepseek-ai/dsh-cua-macos', { os: ['darwin'] })],
+    ])
+    expect(selectDesktopPackageClosure(available, target).map(entry => entry.manifest.name))
+      .not.toContain('@dsh-enterprise/harness-bundle')
+    const selected = selectDesktopPackageClosure(available, target, ['@dsh-enterprise/harness-bundle']).map(entry => entry.manifest.name)
+    expect(selected).toContain('@dsh-enterprise/harness-ui')
+    expect(selected.includes('@deepseek-ai/dsh-cua-macos')).toBe(target.platform === 'darwin')
+    available.delete('@dsh-enterprise/harness-provider')
+    expect(() => selectDesktopPackageClosure(available, target, ['@dsh-enterprise/harness-bundle']))
+      .toThrow(/requires unpacked package @dsh-enterprise\/harness-provider/u)
+  })
+
+  it('selects the same local Cordis and typert packages required by enterprise peers', () => {
+    const available = new Map<string, PackedDesktopPackage>([
+      ['@deepseek-ai/dsh', packed('@deepseek-ai/dsh')],
+      ['@deepseek-ai/dsh-desktop-host', packed('@deepseek-ai/dsh-desktop-host')],
+      ['@deepseek-ai/cordis', packed('@deepseek-ai/cordis')],
+      ['@deepseek-ai/dsh-typert-protocol', packed('@deepseek-ai/dsh-typert-protocol')],
+      ['@dsh-enterprise/harness-bundle', packed('@dsh-enterprise/harness-bundle', {
+        dependencies: { '@dsh-enterprise/harness-identity': '0.1.0' },
+      })],
+      ['@dsh-enterprise/harness-identity', packed('@dsh-enterprise/harness-identity', {
+        peerDependencies: { '@deepseek-ai/cordis': '4.0.5-alpha.1', '@deepseek-ai/dsh-typert-protocol': '0.2.1-alpha.2' },
+      })],
+    ])
+    const selected = selectDesktopPackageClosure(available, { platform: 'win32', arch: 'x64' }, ['@dsh-enterprise/harness-bundle'])
+      .map(entry => entry.manifest.name)
+    expect(selected.filter(name => name === '@deepseek-ai/cordis')).toEqual(['@deepseek-ai/cordis'])
+    expect(selected.filter(name => name === '@deepseek-ai/dsh-typert-protocol')).toEqual(['@deepseek-ai/dsh-typert-protocol'])
+    available.delete('@deepseek-ai/dsh-typert-protocol')
+    expect(() => selectDesktopPackageClosure(available, { platform: 'win32', arch: 'x64' }, ['@dsh-enterprise/harness-bundle']))
+      .toThrow(/requires unpacked package @deepseek-ai\/dsh-typert-protocol/u)
+  })
+
   it.each([
     '@deepseek-ai/dsh-base', '@deepseek-ai/cordis', '@deepseek-ai/node-addon-system',
   ])('rejects required prepared package %s absent from the packed release inputs', (dependency) => {

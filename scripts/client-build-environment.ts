@@ -16,11 +16,28 @@ const CLIENT_BUILD_ENV_PREFIX = 'DSH_CLIENT_'
 /** Non-public selector used by build orchestration to request a named client profile. */
 export const CLIENT_BUILD_PROFILE_SELECTOR = 'DSH_BUILD_CLIENT_PROFILE'
 
-/** Public client environment required by official DSH artifacts. */
-const OFFICIAL_CLIENT_BUILD_ENVIRONMENT = {
-  DSH_CLIENT_BUILD_PROFILE: 'official',
-  DSH_CLIENT_TITLE: 'DeepSeek Harness',
-} as const
+/** Public client profile name carried by shipped official artifacts. */
+const OFFICIAL_CLIENT_BUILD_PROFILE = 'official'
+/** Official product title embedded in browser artifacts. */
+const OFFICIAL_CLIENT_TITLE = 'DeepSeek Harness'
+/** Company packaging selects a display title without changing the client profile. */
+const ENTERPRISE_PRODUCT_NAME_VARIABLE = 'DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME'
+
+/**
+ * Resolve the product title embedded in client artifacts. The official title is
+ * the default; a company package supplies its product name through the desktop
+ * packaging environment.
+ * @param environment - build environment carrying the optional company product name.
+ * @returns a non-empty, control-character-free product title.
+ */
+function clientProductTitle(environment: NodeJS.ProcessEnv): string {
+  const name = environment[ENTERPRISE_PRODUCT_NAME_VARIABLE]
+  if (name === undefined) return OFFICIAL_CLIENT_TITLE
+  if (name.length === 0 || name.length > 64 || /[\u0000-\u001f\u007f]/u.test(name)) {
+    throw new Error(`${ENTERPRISE_PRODUCT_NAME_VARIABLE} must be 1-64 printable characters`)
+  }
+  return name
+}
 
 /** Public variable carrying the source commit embedded in client artifacts. */
 const CLIENT_COMMIT_HASH_VARIABLE = 'DSH_CLIENT_COMMIT_HASH'
@@ -146,7 +163,8 @@ export function officialClientBuildEnvironment(
   return {
     DSH_CLIENT_COMMIT_HASH: repositoryCommitHash(root, environment),
     DSH_CLIENT_VERSION: repositoryVersion(root),
-    ...OFFICIAL_CLIENT_BUILD_ENVIRONMENT,
+    DSH_CLIENT_BUILD_PROFILE: OFFICIAL_CLIENT_BUILD_PROFILE,
+    DSH_CLIENT_TITLE: clientProductTitle(environment),
   }
 }
 
@@ -181,8 +199,9 @@ function clientBuildEnvironment(environment: NodeJS.ProcessEnv): ClientBuildEnvi
 
 /**
  * Resolve the exact public environment selected for a complete client build.
- * Named profiles discard inherited public overrides. Local builds retain the supplied
- * commit, version, and true dirty marker; repositoryClientBuildEnvironment supplies that metadata.
+ * Named profiles discard inherited public overrides; company packaging may supply a title
+ * for either profile. Local builds retain the supplied commit, version, and true dirty marker;
+ * repositoryClientBuildEnvironment supplies that metadata.
  * @param environment - parent process environment.
  * @param profile - explicit profile, or the non-public selector when omitted.
  * @returns the inherited public values when no profile is selected, otherwise the named profile.
@@ -204,8 +223,13 @@ export function resolveClientBuildEnvironment(
     return {
       DSH_CLIENT_COMMIT_HASH: commitHash,
       DSH_CLIENT_VERSION: version,
-      ...(profile === 'official' ? OFFICIAL_CLIENT_BUILD_ENVIRONMENT : {
+      ...(profile === 'official' ? {
+        DSH_CLIENT_BUILD_PROFILE: OFFICIAL_CLIENT_BUILD_PROFILE,
+        DSH_CLIENT_TITLE: clientProductTitle(environment),
+      } : {
         DSH_CLIENT_BUILD_PROFILE: 'local',
+        ...(environment[ENTERPRISE_PRODUCT_NAME_VARIABLE] === undefined
+          ? {} : { DSH_CLIENT_TITLE: clientProductTitle(environment) }),
         ...(environment.DSH_CLIENT_GIT_DIRTY === 'true' ? { DSH_CLIENT_GIT_DIRTY: 'true' } : {}),
       }),
     }

@@ -1,5 +1,9 @@
 /** Environment variable that supplies the Electron application identifier. */
 export const DESKTOP_APP_ID_ENV: 'DSH_DESKTOP_APP_ID'
+export const LOCAL_ENTERPRISE_APP_ID: 'com.deepseek.harness.enterprise.local'
+export const OFFICIAL_APP_ID: 'com.deepseek.harness'
+export const ENTERPRISE_PROTOCOL_SCHEME_ENV: 'DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME'
+export const ENTERPRISE_PRODUCT_NAME_ENV: 'DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME'
 
 /** Environment variable that supplies electron-builder's macOS certificate qualifier. */
 export const MACOS_SIGNING_IDENTITY_ENV: 'DSH_DESKTOP_MACOS_SIGNING_IDENTITY'
@@ -48,6 +52,15 @@ export type MacOSNotarizationEnvironment =
  * @returns Reverse-DNS application identifier.
  */
 export function resolveDesktopAppId(env: NodeJS.ProcessEnv): string
+
+/** Validated release edition, application identity, and generated artifact names. */
+export function resolveDesktopPackageIdentity(env: NodeJS.ProcessEnv): {
+  readonly edition: 'official' | 'enterprise'
+  readonly appId: string
+  readonly productName: string
+  readonly protocolScheme: string
+  readonly artifactPrefix: string
+}
 
 /**
  * Resolve the npm registry used to materialize the bundled runtime and its external dependencies.

@@ -106,6 +106,9 @@ describe('Desktop local packaging configuration', () => {
     const parent = {
       PATH: 'build-tools', HTTPS_PROXY: 'http://proxy.example:8080', DSH_DESKTOP_NPM_REGISTRY: 'https://registry.npmmirror.com',
       DSH_DESKTOP_APP_ID: 'com.example.release', DSH_DESKTOP_UNSIGNED: '0',
+      DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_ENTERPRISE_COMPANIES: '[{"companyId":"ambient"}]',
+      DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Ambient Harness', DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'ambient-harness',
+      DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://ambient.example',
       DSH_DESKTOP_AUTO_UPDATE_ENV: 'production', DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'invalid-json',
       DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN: 'https://policy.example.com',
       DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Release identity', CSC_LINK: 'missing.p12',
@@ -119,6 +122,54 @@ describe('Desktop local packaging configuration', () => {
     expect(() => { validateDesktopPackageEnvironment(local, MACOS, { unsigned: true }) }).not.toThrow()
     expect(parent.DSH_DESKTOP_UNSIGNED).toBe('0')
     expect(parent.DSH_DESKTOP_APP_ID).toBe('com.example.release')
+  })
+
+  it('retains file-owned company identity alongside Windows preparation settings', async () => {
+    await withDirectory(async (directory) => {
+      await writeFile(join(directory, '.env.windows'), [
+        'DSH_DESKTOP_APP_ID=com.example.company',
+        'DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME=Company Harness',
+        'DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME=company-harness',
+        'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN=https://updates.example.com',
+        'DSH_DESKTOP_WINDOWS_PACK_CONCURRENCY=2',
+        'DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL=7',
+      ].join('\n'))
+      const selected = loadDesktopPackageEnvironment('win32', {
+        DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_ENTERPRISE_COMPANIES: 'ambient-companies',
+        DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://ambient.example',
+      }, directory, { unsigned: true })
+      expect(selected).toMatchObject({ DSH_DESKTOP_APP_ID: 'com.example.company',
+        DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Company Harness', DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'company-harness',
+        DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://updates.example.com' })
+      expect(selected).not.toHaveProperty('DSH_DESKTOP_ENTERPRISE_MODE')
+      expect(selected).not.toHaveProperty('DSH_DESKTOP_ENTERPRISE_COMPANIES')
+      expect(selected).not.toHaveProperty('DSH_ENTERPRISE_SERVICE_ORIGIN')
+      expect(resolveWindowsPackageSettings(selected)).toMatchObject({ packConcurrency: 2, compressionLevel: 7 })
+    })
+  })
+
+  it('gives unsigned enterprise builds an isolated provisional app ID and rejects it for signed release', () => {
+    const local = localMacOSPackageEnvironment({ DSH_DESKTOP_APP_ID: 'com.example.release' }, 'enterprise')
+    expect(local).toMatchObject({ DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local', DSH_DESKTOP_ENTERPRISE_MODE: '1' })
+    expect(() => { validateDesktopPackageEnvironment(local, MACOS, { unsigned: true }) }).not.toThrow()
+    expect(() => { validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_UNSIGNED: '0' }, MACOS) }).toThrow(/enterprise app ID/u)
+    expect(() => { validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, MACOS, { unsigned: true }) })
+      .toThrow(/enterprise app ID/u)
+    expect(() => { validateDesktopPackageEnvironment({ ...local, DSH_DESKTOP_APP_ID: 'org.example.harness' }, MACOS, { unsigned: true }) })
+      .toThrow(/custom enterprise app ID requires/u)
+  })
+
+  it('requires an explicit publisher-owned identifier and signing inputs for signed enterprise macOS', () => {
+    const signed = { ...RELEASE, ...MAC_IDENTITY, DSH_DESKTOP_ENTERPRISE_MODE: '1' }
+    expect(() => { validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, MACOS) })
+      .toThrow(/enterprise app ID/u)
+    expect(() => { validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness' }, MACOS) })
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
+    expect(() => { validateDesktopPackageEnvironment({ ...signed, DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }, MACOS) })
+      .toThrow(/macOS packaging requires/u)
   })
 
   it('takes cache concurrency from the Windows file and defaults to four without ambient overrides', async () => {

@@ -37,6 +37,46 @@ describe('desktop locale dictionaries', () => {
     expect(resolveDesktopStartupLocale(null, [id]).id).toBe(id === 'zh' ? 'zh-CN' : id)
   })
 
+  it('brands shell copy with the packaged company name', () => {
+    const english = resolveDesktopLocale('en', 'Ruqinba Harness').messages
+    expect(english.aboutProduct).toBe('Ruqinba Harness')
+    expect(english.startupFailed).toBe('Ruqinba Harness is unavailable')
+    expect(english.quitApplication).toBe('Quit Ruqinba Harness')
+    const chinese = resolveDesktopLocale('zh-CN', 'Ruqinba Harness').messages
+    expect(chinese.aboutMenu).toBe('关于 Ruqinba Harness')
+    expect(chinese.startupFailed).toBe('Ruqinba Harness 无法使用')
+    expect(resolveDesktopStartupLocale('zh', [], 'Ruqinba Harness').messages.quitTitle).toBe('退出 Ruqinba Harness？')
+  })
+
+  it.each(SHIPPED_LOCALE_IDS)('brands every shipped language %s without changing its selection', (id) => {
+    const productName = 'Enterprise $& Desktop'
+    const branded = resolveDesktopLocale(id, productName)
+    const original = resolveDesktopLocale(id)
+    expect(branded.id).toBe(original.id)
+    for (const key of Object.keys(en) as (keyof typeof en)[]) {
+      expect(branded.messages[key]).toBe(original.messages[key]
+        .replaceAll('DeepSeek Harness Enterprise', () => productName)
+        .replaceAll('DeepSeek Harness 企业版', () => productName)
+        .replaceAll('DeepSeek Harness', () => productName))
+    }
+    expect(resolveDesktopStartupLocale(id, ['en'], productName)).toEqual(branded)
+    expect(resolveDesktopStartupLocale(null, [id], productName)).toEqual(branded)
+  })
+
+  it('localizes company switching and preserves the selected company name', () => {
+    const name = '企业 $& 工作台'
+    expect(zh.switchCompanyMenu).toBe('切换公司…')
+    expect(en.switchCompanyMenu).toBe('Switch company…')
+    expect(formatDesktopMessage(zh.switchCompanyTitle, { company: name })).toBe(`切换到 ${name}`)
+    expect(formatDesktopMessage(en.switchCompanyTitle, { company: name })).toBe(`Switch to ${name}`)
+    for (const id of SHIPPED_LOCALE_IDS) {
+      const messages = resolveDesktopLocale(id).messages
+      expect(messages.restartAndSwitch.length).toBeGreaterThan(0)
+      expect(messages.switchCompanyDetail.length).toBeGreaterThan(0)
+      expect(formatDesktopMessage(messages.switchCompanyTitle, { company: name })).toContain(name)
+    }
+  })
+
   it('formats named values without consuming unknown placeholders', () => {
     expect(formatDesktopMessage('{name}@{version} {missing}', { name: 'plugin', version: '1.2.3' }))
       .toBe('plugin@1.2.3 {missing}')

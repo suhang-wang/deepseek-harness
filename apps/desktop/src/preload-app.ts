@@ -13,9 +13,14 @@ import { installMandatoryUpdateOverlay } from './preload-mandatory-overlay.ts'
 import { createDesktopBrowserBridge } from './preload-browser.ts'
 import type { FileDragHandle } from '@deepseek-ai/dsh-util-file-drag'
 
+const BRAND_TITLE_PREFIX = '--dsh-brand-title='
+const brandTitle = process.argv.find(argument => argument.startsWith(BRAND_TITLE_PREFIX))
+  ?.slice(BRAND_TITLE_PREFIX.length)
+
 function createProductApi(): DshDesktopProductApi {
   return {
     protocolVersion: 1,
+    ...(brandTitle === undefined || brandTitle === '' ? {} : { brandTitle }),
     fileActions: {
       save: request => ipcRenderer.invoke(DESKTOP_IPC.fileSave, request) as Promise<FileSaveResult>,
       readClipboardImage: url => ipcRenderer.invoke(DESKTOP_IPC.clipboardImageRead, url) as

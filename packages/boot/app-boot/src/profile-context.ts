@@ -23,6 +23,12 @@ export interface ProfileContext {
   readonly home: string
   /** Bundle packages used to start this process, before any persisted edits. */
   readonly startedBundles: readonly string[]
+  /** Optional launcher-owned package allowlist for a managed Host profile. */
+  readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+  /** Signed runtime packages against which every declared Host dependency is verified. */
+  readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]
+  /** Native Desktop's signed HTTPS service origin for enterprise identity and provider rows. */
+  readonly enterpriseServiceOrigin?: string
   /** Absolute command-line overlay files in argv order, read on every composition and applied above profile and home patches. */
   readonly overlayPaths: readonly string[]
   /** Launch-time DSH_TELEMETRY_DISABLED value; any non-empty value opts out. */

@@ -7,11 +7,13 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  statSync,
   rmSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { createDevelopmentProjectMetadata } from '../src/project-manager.ts'
 import type { DesktopRelease } from '../src/release.ts'
@@ -161,9 +163,16 @@ export function prepareDevelopmentProject(options: DevelopmentProjectOptions): s
   const sharedPackages = [...new Set([...names, '@deepseek-ai/dsh', '@deepseek-ai/dsh-desktop-host'])].flatMap((name) => {
     const manifest = readManifest(join(destinationModules, name, 'package.json'))
     return typeof manifest.version === 'string' ? [{ name, version: manifest.version, path: `node_modules/${name}` }] : []
+  }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+  const files = sharedPackages.map((entry) => {
+    const path = `${entry.path}/package.json`
+    const filename = join(options.projectDir, path)
+    const bytes = readFileSync(filename)
+    return { path, bytes: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex'),
+      executable: process.platform !== 'win32' && (statSync(filename).mode & 0o111) !== 0 }
   })
   const runtime: DesktopRuntimeDescriptor = { schemaVersion: 1, release: options.release,
-    ...desktopTargetPlatform(options.target), sharedPackages, files: [] }
+    ...desktopTargetPlatform(options.target), sharedPackages, trustedHostPackages: sharedPackages, files }
   writeFileSync(join(options.projectDir, DESKTOP_RUNTIME_FILE), `${JSON.stringify(runtime, undefined, 2)}\n`)
   return options.projectDir
 }

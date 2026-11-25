@@ -19,6 +19,7 @@ description: "在本地或 Windows／macOS Actions 中生成 Desktop 安装包�
 - [macOS 自托管打包](#macos-actions)
 - [未签名 Windows 测试安装包](#unsigned-windows-test-installer)
 - [无发布签名的本地 macOS DMG](#local-macos-dmg-without-release-signing)
+- [本地企业组合包准备](#local-enterprise-package-preparation)
 - [macOS 发布签名与诊断](#macos-release-signing)
 - [目录构建与准备](#directory-and-preparation)
 - [用回环 registry 安装本地 Official 包](#local-official-bundles-from-a-loopback-registry)
@@ -69,7 +70,7 @@ production 发布使用产品版本本身，不传 `--build-version`。其上传
 
 ## 配置与本地构建
 
-macOS 和 Windows 未签名安装包使用与本地 Web 构建相同的本地化 **DSH 本地构建** 标签及版本/commit 徽标。签名安装包保留官方品牌，包括 test 部署和跳过公证的 macOS 构建。原生应用及安装器名称不变。
+macOS 和 Windows 未签名安装包使用 `local` 客户端构建 profile，采用与本地 Web 构建相同的默认本地化 **DSH 本地构建** 标签及版本/commit 徽标。签名安装包使用 `official`，包括 test 部署和跳过公证的 macOS 构建。公司打包通过 `DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME` 提供 `DSH_CLIENT_TITLE`，不改变该 profile 选择。原生应用及安装器名称不变。
 
 本地 Windows 命令通过 `DSH_PACKAGING_CONFIG_DIR` 指定机器配置绝对目录，通过 `DSH_PACKAGING_PRESET` 选择 `test` 或 `production`。加载器读取 `presets/<preset>.env`；签名命令另读 `secrets/windows-signing.env`。相对证书和 SignTool 路径以声明它们的文件所在目录为基准。公开 preset 拒绝凭据，签名文件不能覆盖公开配置。配置缺失立即失败，不回退到 `.env.windows`；不选择 preset 的命令保留原 dotenv 行为。未签名和仅准备 preset 不读取签名文件。缓存维护也只读取公开 preset 配置。签名测试包还需现有下载 origin 和 release ID，但无需上传凭据。本地 preset 命令使用 `--build-version auto` 时仅按本地产物编号；Actions 使用运行编号和重试次数。
 
@@ -178,6 +179,28 @@ pnpm run package:desktop:mac:x64:unsigned
 
 这些命令忽略 `.env.macos` 和继承的发布配置，使用 `com.deepseek.harness` 作为应用 ID，并省略自动更新和强制更新配置。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。准备阶段和组装后的应用仍执行运行时完整性与冒烟检查。本地构建不生成更新源、ZIP 或发布完成记录，上传命令无法发布这些产物。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。这类构建不放入 Computer Use helper，Computer Use 准备时会报告 helper 缺失。
 
+<a id="local-enterprise-package-preparation"></a>
+
+## 本地企业组合包准备
+
+在本仓库中，将相邻企业仓库和获准的企业服务地址明确传给 macOS arm64 打包命令：
+
+```sh
+pnpm run package:desktop:mac:arm64:unsigned -- --dir --enterprise-packages ../deepseek-harness-enterprise --enterprise-service-origin https://127.0.0.1:3443
+```
+
+该命令构建企业工作区，打包身份、模型提供方、界面及组合包四个包，并将组合包依赖闭包纳入 Desktop 包集合。它把 HTTPS 服务地址封入打包运行时描述文件，解包应用位于 `apps/desktop/.desktop-build/enterprise/targets/mac-arm64/unsigned-artifacts/mac-arm64/DeepSeek Harness Enterprise.app`；准备文件留在同一企业目标目录。未签名企业包使用临时应用 ID `com.deepseek.harness.enterprise.local`、产品名 `DeepSeek Harness Enterprise`、`dsh-enterprise` URL 协议和独立产物名称。打包清单写入 `dshDesktopEdition=enterprise`。服务地址必须是无凭据、路径、查询和片段的规范 HTTPS origin。本地 Host 冒烟使用合成配置和服务，不能证明真实企业微信登录。
+
+为每家公司单独制作客户端时，复制 [enterprise-profile.example.json](../enterprise-profile.example.json) 到私有的非密钥配置文件，填写 `appId`、`productName`、`protocolScheme` 和 `serviceOrigin`。若一个安装包服务最多两家公司，从 [enterprise-profile.multi-company.example.json](../enterprise-profile.multi-company.example.json) 开始并填写 `companies`：一到两个条目，`companyId`、`displayName` 与 canonical HTTPS `serviceOrigin` 均唯一，且首个 Origin 等于 `serviceOrigin`。客户端随后会打开公司选择窗口，同一时间只激活一家公司，分别保存会话和数据空间，并通过重启切换公司；Windows 工作流的 `enterprise_profile` 输入必须指向包含 `companies` 的已提交配置。在 macOS arm64 或 Windows x64 打包命令中，保留 `--enterprise-packages`，用 `--enterprise-profile path/to/company.json` 代替 `--enterprise-service-origin`；路径相对于本仓库根目录解析。同一电脑上共存的客户端须使用不同的应用 ID、名称和协议名；配置文件决定安装包注册的应用唤起 URL 协议与独立产物文件名。自定义客户端的准备文件和产物位于 `.desktop-build/enterprise/companies/<appId>/targets/<target>/`，构建第二家公司时不会覆盖第一家公司的包。不同应用 ID 也分别使用独立的本地数据目录和加密会话文件。自定义应用 ID 的签名包也必须使用独立名称和协议。自定义应用 ID 的更新目录按 `dsh-enterprise/<appId>/...` 隔离，即使共用更新域名也不会覆盖；旧临时客户端保留原更新路径。企业微信登录的 HTTPS 回调须分别在各公司后台配置。服务地址仍固定在打包运行时中。企业微信和模型密钥只保存在各公司的服务端。不传配置文件的旧命令继续使用临时标识。
+
+未签名的 Windows x64 企业安装包使用相同的企业组合包选择参数，须在 Windows x64 构建主机上运行。它读取 `.env.windows`，其中的临时应用 ID 可由公司配置文件覆盖；与 macOS 未签名路径不同，它仍要求所选的强制更新源。安装包输出到 `apps/desktop/.desktop-build/enterprise/targets/win-x64/unsigned-artifacts`。企业微信二维码登录尝试开始前，刷新与退出凭据经 Electron safeStorage 使用 Windows DPAPI 加密；访问令牌只留在 Host 内存。DPAPI 防止其他 Windows 用户读取，但不隔离同一用户下的任意进程。手动 `windows-enterprise-package.yml` 流程可读取私有企业仓库中的配置文件并生成未签名开发安装包，不代表已完成签名后的员工发行资格。
+
+企业欢迎窗展示企业微信登录二维码，并自动查询同一次授权尝试；流程及浏览器备用入口见[认证设计](../../../docs/enterprise/technical-design.zh.md#authentication)。
+
+签名的 macOS arm64 企业包沿用两个企业参数，但不加 `--unsigned`。它从 `.env.macos` 读取企业发行方拥有的显式反向域名 `DSH_DESKTOP_APP_ID`、Developer ID 签名、公证凭据和 `DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN`。签名构建拒绝普通版 `com.deepseek.harness` 命名空间及临时企业 ID。它要求显式企业 HTTPS 更新源，使用 `dsh-enterprise/` 路径而非普通版的 `dsh-desk/`，并拒绝 `download.deepseek.com`。发行前须核实标识和更新源所有权；构建只能校验格式和隔离，不能证明域名所有权。企业更新发布和版本窗口资格验证由后续更新 Feature 完成。真实企业微信登录仍需可信回调域名及获批的企业微信凭据。
+
+打包后的 Desktop 和 Host 使用已封存描述文件中的地址，覆盖继承的 shell 环境或 dotenv 值；身份及模型提供方配置若指向其他地址，会在插件加载前使启动失败。
+
 <a id="macos-release-signing"></a>
 
 ## macOS 发布签名与诊断
@@ -270,9 +293,13 @@ Windows 安装器在启动时和选定目标目录后检查应用是否正在运
 
 Windows 打包将 7-Zip 过滤器固定为 `BCJ`，以兼容内置的 NSIS 解码器。这样可以保留 x64 安装包中由依赖携带的 ARM64 二进制文件；自动 ARM64 过滤会生成该解码器无法解压的条目。
 
+Windows 打包在产物目录内使用唯一的短临时文件名生成 NSIS 引导程序和卸载程序，最终安装包保留配置的产物名称。打包会拒绝超过 Windows 长度限制的输出路径，并在组装最终安装包前报告生成的卸载程序缺失或为空。如果产物目录本身过长，请缩短仓库检出路径。
+
 Windows dotenv 或机器 preset 中的 `DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL` 选择 `0` 至 `9` 的安装包归档压缩等级。省略时，现有 `ELECTRON_BUILDER_COMPRESSION_LEVEL` 环境覆盖仍然生效，否则 test 和 production 均默认为 `3`。手动 Windows workflow 的 `compression_level` 下拉默认选 `3`，也提供 `7`，与 Mac ZIP 选项一致；它对本轮覆盖文件中的设置。直接本地打包保留显式机器配置。Mac ZIP workflow 覆盖值必须为 `3` 或 `7`；空值在 macOS 上也非法。任何已定义的 Mac ZIP workflow 覆盖值（包括空值）均拒绝用于 Windows；非空的 Windows workflow 覆盖值拒绝用于 macOS。较低等级以安装包体积换取打包时间；修改发布 preset 前应验证完整签名 workflow 和产物体积。
 
 NSIS 在安装阶段清理临时解压目录，完成后才显示完成页或自动启动应用。已安装的生产依赖保持为普通文件；启动时不会再次解压。安装仍会写入完整的应用目录树。
+
+Windows 打包后运行检查会先将组装完成的整个应用复制到私有临时目录，使用物理路径启动应用，避免 Windows 短文件名别名造成不同的模块解析根目录。即使公司构建目录嵌套很深，也能避免 ConPTY DLL 路径超过原生依赖的旧版路径长度限制。插件路由失败时会保留 HTTP 状态、长度受限的响应摘要与 Host 标准错误，并隐去检查用的登录令牌。检查保留真实的 PTY 分配，并在成功或失败后删除副本；签名构建会校验复制后的应用。该检查通过不代表支持任意长度的安装路径。
 
 <a id="desktop-runtime-preparation"></a>
 

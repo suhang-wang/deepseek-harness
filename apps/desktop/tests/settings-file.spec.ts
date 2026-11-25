@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest'
 import { DesktopSettingsFile, isDesktopUpdateChannel } from '../src/settings-file.ts'
-import { readDesktopSettings } from '../src/settings.ts'
+import { readDesktopSettings, writeDesktopSettings } from '../src/settings.ts'
 import { DesktopUpdateSettings } from '../src/update-settings.ts'
 
 vi.mock('node:fs/promises', async original => ({ ...await original<typeof import('node:fs/promises')>() }))
@@ -36,12 +36,14 @@ it('distinguishes missing files from absent fields without creating a file durin
 it.each([
   ['{secret-value', 'json'], ['null', 'structure'], ['[]', 'structure'],
   ['{"updates":null}', 'structure'], ['{"updates":[]}', 'structure'], ['{"updates":true}', 'structure'],
+  ['{"enterprise":null}', 'structure'], ['{"enterprise":[]}', 'structure'], ['{"enterprise":true}', 'structure'],
 ])('classifies malformed documents and refuses to replace them: %s', async (raw, reason) => {
   const { file } = await fixture(raw)
   const result = await file.initialize()
   expect(result).toMatchObject({ kind: 'error', error: { problem: { kind: 'invalid', reason }, path: file.path } })
   expect(JSON.stringify(result)).not.toContain('secret-value')
   await expect(file.saveUpdates({ channel: 'stable' })).rejects.toMatchObject({ problem: { kind: 'invalid', reason } })
+  await expect(file.save({ enterprise: { activeCompanyId: 'company-b' } })).rejects.toMatchObject({ problem: { kind: 'invalid', reason } })
   expect(await readFile(file.path, 'utf8')).toBe(raw)
 })
 
@@ -85,6 +87,20 @@ it('serializes initializers and patches from separate storage instances without 
   await Promise.all([file.initialize(), other.initialize()])
   await Promise.all([file.saveUpdates({ channel: 'stable' }), other.saveUpdates({ allowTestAuthPopupWindow: true })])
   expect(JSON.parse(await readFile(file.path, 'utf8'))).toEqual({ updates: { channel: 'stable', allowTestAuthPopupWindow: true } })
+  await expect(fs.access(`${file.path}.lock`)).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('serializes company and update changes without dropping either selection or unknown fields', async () => {
+  const { root, file } = await fixture('{"custom":true,"updates":{"future":1},"enterprise":{"future":2}}')
+  await Promise.all([
+    writeDesktopSettings(root, { enterprise: { activeCompanyId: 'company-b' } }),
+    new DesktopUpdateSettings(root, 'nightly').save('stable'),
+    file.saveUpdates({ allowTestAuthPopupWindow: true }),
+  ])
+  expect(JSON.parse(await readFile(file.path, 'utf8'))).toEqual({ custom: true,
+    updates: { future: 1, channel: 'stable', allowTestAuthPopupWindow: true },
+    enterprise: { future: 2, activeCompanyId: 'company-b' },
+  })
   await expect(fs.access(`${file.path}.lock`)).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
@@ -159,8 +175,8 @@ it('reports a partial initialization write as uncertain and preserves it for dia
   expect(await file.initialize()).toMatchObject({ kind: 'error', error: { problem: { kind: 'invalid', reason: 'json' } } })
 })
 
-it('rereads fields after acquiring the writer lock instead of saving a stale snapshot', async () => {
-  const { file } = await fixture('{"updates":{"channel":"stable"}}')
+it.each(['channel', 'company'] as const)('rereads fields after acquiring the writer lock instead of saving a stale %s snapshot', async (selection) => {
+  const { root, file } = await fixture('{"updates":{"channel":"stable"}}')
   const started = Promise.withResolvers<undefined>()
   const release = Promise.withResolvers<undefined>()
   const holder = atomic.withFileLock(file.path, async () => {
@@ -175,13 +191,17 @@ it('rereads fields after acquiring the writer lock instead of saving a stale sna
     attempting.resolve(undefined)
     return originalLock(path, operation, options)
   })
-  const save = file.saveUpdates({ channel: 'nightly' })
+  const save = selection === 'channel' ? file.saveUpdates({ channel: 'nightly' })
+    : writeDesktopSettings(root, { enterprise: { activeCompanyId: 'company-b' } })
   onTestFinished(async () => { release.resolve(undefined); await Promise.allSettled([holder, save]) })
   await attempting.promise
   release.resolve(undefined)
   const outcomes = await Promise.allSettled([holder, save])
   expect(outcomes.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
-  expect(JSON.parse(await readFile(file.path, 'utf8'))).toEqual({ updates: { channel: 'nightly', future: 3 }, other: 4 })
+  expect(JSON.parse(await readFile(file.path, 'utf8'))).toEqual({
+    updates: { channel: selection === 'channel' ? 'nightly' : 'stable', future: 3 }, other: 4,
+    ...(selection === 'company' ? { enterprise: { activeCompanyId: 'company-b' } } : {}),
+  })
 })
 
 it('accepts the new channel and persists a warning after a real write with failed lock removal', async () => {

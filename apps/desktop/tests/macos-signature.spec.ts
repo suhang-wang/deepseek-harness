@@ -38,6 +38,17 @@ function portablePath(value: string): string {
 }
 
 describe('desktop macOS release signature', () => {
+  it('seals a signed enterprise package to its separate feed and edition identity', async () => {
+    const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
+    const env = { ...RELEASE_ENVIRONMENT, DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_APP_ID: 'org.example.harness',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }
+    const config = createElectronBuilderConfig(env, 'darwin', 'arm64')
+    expect(config).toMatchObject({ appId: 'org.example.harness', productName: 'Example Harness',
+      artifactName: 'deepseek-harness-enterprise-org.example.harness-${version}-${os}-${arch}.${ext}',
+      extraMetadata: { dshDesktopEdition: 'enterprise', dshDesktopAppId: 'org.example.harness' },
+      publish: [{ url: `https://enterprise-updates.example.com/dsh-enterprise/org.example.harness/${RELEASE_ENVIRONMENT.DOWNLOAD_TEST_RELEASE_ID}/feeds/mac-arm64/` }] })
+  })
   beforeAll(() => {
     for (const [name, value] of Object.entries(RELEASE_ENVIRONMENT)) vi.stubEnv(name, value)
   })
@@ -154,6 +165,34 @@ describe('desktop macOS release signature', () => {
       win: { forceCodeSigning: false, signtoolOptions: { sign: undefined } },
       publish: null,
     })
+  })
+
+  it('carries signed companies and the enterprise NSIS wrapper for a Windows package', async () => {
+    const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
+    const companies = [
+      { companyId: 'company-a', displayName: 'Company A', serviceOrigin: 'https://a.example.test' },
+      { companyId: 'company-b', displayName: 'Company B', serviceOrigin: 'https://b.example.test' },
+    ]
+    const config = createElectronBuilderConfig({
+      DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_APP_ID: 'com.example.harness.enterprise',
+      DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Enterprise Workspace',
+      DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-enterprise',
+      DSH_ENTERPRISE_SERVICE_ORIGIN: companies[0]!.serviceOrigin,
+      DSH_DESKTOP_ENTERPRISE_COMPANIES: JSON.stringify(companies),
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
+      DSH_DESKTOP_TARGET_PLATFORM: 'win32',
+      DSH_DESKTOP_UNSIGNED: '1',
+    }, 'win32', 'x64')
+    const metadata = config.extraMetadata as Record<string, unknown>
+    expect(metadata.dshDesktopCompanies).toEqual(companies)
+    expect(metadata.dshDesktopUpdateChannel).toBe('nightly')
+    expect(metadata.dshMandatoryUpdatePolicy).toBeDefined()
+    expect(portablePath(config.directories.output))
+      .toContain('/enterprise/companies/com.example.harness.enterprise/targets/win-x64/unsigned-artifacts')
+    expect(portablePath(config.nsis.include)).toMatch(/installer-include\.nsh$/u)
+    expect(readFileSync(config.nsis.include, 'utf8')).toContain('installer.nsh')
   })
 
   it.each(['arm64', 'x64'])('builds local macOS %s DMGs without release credentials or update metadata', async (arch) => {

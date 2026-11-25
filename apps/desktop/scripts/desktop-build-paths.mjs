@@ -1,6 +1,7 @@
 /** Resolve target-owned Desktop outputs and shared package caches. */
 
 import { isAbsolute, join, resolve } from 'node:path'
+import { LOCAL_ENTERPRISE_APP_ID } from './desktop-release-environment.mjs'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
@@ -38,8 +39,8 @@ function assertSupportedTarget(target) {
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
- * @param {NodeJS.ProcessEnv} environment - Packaging environment with an optional absolute cache directory.
- * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, unnotarizedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string, pnpmStore: string }} Target paths plus shared download and package caches.
+ * @param {NodeJS.ProcessEnv} environment - Packaging environment selecting the edition, company app ID and optional absolute cache directory.
+ * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, unnotarizedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, packedEnterprise: string, downloads: string, pnpmStore: string }} Edition- and company-specific target paths plus shared download and package caches.
  */
 export function desktopTargetBuildPaths(target, environment = process.env) {
   assertSupportedTarget(target)
@@ -47,7 +48,19 @@ export function desktopTargetBuildPaths(target, environment = process.env) {
   if (!cacheRoot.trim() || !isAbsolute(cacheRoot) || cacheRoot.includes('\0')) {
     throw new Error('desktop package: DSH_DESKTOP_PACKAGE_CACHE_DIR must be a nonempty absolute directory')
   }
-  const root = join(BUILD_ROOT, 'targets', target)
+  const mode = environment.DSH_DESKTOP_ENTERPRISE_MODE
+  if (mode !== undefined && mode !== '1') {
+    throw new Error('desktop build paths: DSH_DESKTOP_ENTERPRISE_MODE must be 1 when present')
+  }
+  const companyAppId = mode === '1' ? environment.DSH_DESKTOP_APP_ID : undefined
+  if (companyAppId !== undefined && !/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){2,}$/u.test(companyAppId)) {
+    throw new Error('desktop build paths: company app ID requires a lowercase reverse-DNS identifier')
+  }
+  const enterpriseRoot = companyAppId === undefined || companyAppId === LOCAL_ENTERPRISE_APP_ID
+    ? join(BUILD_ROOT, 'enterprise') : join(BUILD_ROOT, 'enterprise', 'companies', companyAppId)
+  const root = mode === '1'
+    ? join(enterpriseRoot, 'targets', target)
+    : join(BUILD_ROOT, 'targets', target)
   const packed = join(root, 'packed')
   return {
     root,
@@ -62,6 +75,7 @@ export function desktopTargetBuildPaths(target, environment = process.env) {
     packedDsh: join(packed, 'dsh'),
     packedVendor: join(packed, 'vendor'),
     packedLandlock: join(packed, 'landlock'),
+    packedEnterprise: join(packed, 'enterprise'),
     downloads: join(cacheRoot, 'downloads'),
     pnpmStore: join(cacheRoot, 'pnpm-store'),
   }

@@ -33,14 +33,14 @@
   en: 372297005b57a08b
   zh: 074a635ac17e4362
 /deepseek-harness-desktop/installation-ownership:
-  en: 575d82acb5d61018
-  zh: b1064786f63863f7
+  en: 820f29fd3fcb2901
+  zh: 6802d2111333cb71
 /deepseek-harness-desktop/installation-ownership/runtime-and-plugin-activation:
   en: 4951cd3ee659eb33
   zh: 96bdd6358dad587a
 /deepseek-harness-desktop/installation-ownership/host-environment:
-  en: 98cf848762482d48
-  zh: 74f9100a39ec8c2f
+  en: 19bbaa93017e4c67
+  zh: 425db6de373c98b7
 /deepseek-harness-desktop/develop:
   en: 4e4b26cfaaa098ee
   zh: e0a2965606020041
@@ -51,8 +51,11 @@
   en: 617a89aeb28131b9
   zh: 4d84bd5d86501c86
 /deepseek-harness-desktop/package:
-  en: 7200a35dbed997c3
-  zh: 511d6961530757f1
+  en: b6639fb5eee9b411
+  zh: 662afccf335e0766
+/deepseek-harness-desktop/package/local-enterprise-package-preparation:
+  en: 1c45cc53f6954576
+  zh: bade0967a50b9dca
 /deepseek-harness-desktop/windows-installer-interface:
   en: eb9d30bca4134f80
   zh: bf201d18ae5ba697

@@ -16,6 +16,7 @@ function mount(language = 'zh-CN', takeNotice = vi.fn<() => Promise<WelcomeNotic
   const stopAccount = vi.fn()
   const api = {
     takeNotice,
+    productName: 'DeepSeek Harness',
     analytics: vi.fn(async (_event: string, _attributes: object) => {}),
     analyticsEnabled: async () => true,
     onAccountState: vi.fn((_listener: (state: AccountView) => void) => stopAccount),

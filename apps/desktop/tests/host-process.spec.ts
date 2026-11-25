@@ -15,11 +15,17 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 const roots: string[] = []
 const hosts: DesktopHostProcess[] = []
+const ENTERPRISE_IDENTITY_ALLOWLIST = Object.freeze([{
+  name: '@dsh-enterprise/harness-identity', version: '1.0.0', path: '/enterprise/harness-identity',
+}])
 
 const HTTP_HOST = `
 import { createServer } from 'node:http'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+const allowlistArgument = process.argv.find(argument => argument.startsWith('--dsh-host-plugin-allowlist-file='))
+const allowlistFile = allowlistArgument === undefined ? null : allowlistArgument.slice('--dsh-host-plugin-allowlist-file='.length)
+const allowlist = allowlistFile === null ? null : readFileSync(allowlistFile, 'utf8')
 let authenticationReceived = false
 let receivedSecret = ''
 let listening = false
@@ -41,8 +47,14 @@ const server = createServer((request, response) => {
     })
     return
   }
+  const result = {runtime: process.argv[2], profile: process.argv[3], cwd: process.cwd(), nodePath: process.env.NODE_PATH, registry: process.env.NPM_CONFIG_REGISTRY, nodeOptions: process.env.NODE_OPTIONS, runAsNode: process.env.ELECTRON_RUN_AS_NODE, internals: process.execArgv.includes('--expose-internals')}
+  if (allowlistFile !== null) Object.assign(result, {
+    allowlistFile, allowlist, allowlistBytes: Buffer.byteLength(allowlist ?? ''),
+    inlineAllowlist: process.argv.some(argument => argument.startsWith('--dsh-host-plugin-allowlist=')),
+    argvLength: process.argv.join(' ').length,
+  })
   response.setHeader('content-type', 'application/json')
-  response.end(JSON.stringify({runtime: process.argv[2], profile: process.argv[3], cwd: process.cwd(), nodePath: process.env.NODE_PATH, registry: process.env.NPM_CONFIG_REGISTRY, nodeOptions: process.env.NODE_OPTIONS, runAsNode: process.env.ELECTRON_RUN_AS_NODE, internals: process.execArgv.includes('--expose-internals'), privateAuth: authenticationReceived && /^[A-Za-z0-9_-]{43}$/.test(receivedSecret) && !JSON.stringify(process.argv).includes(receivedSecret) && !JSON.stringify(process.env).includes(receivedSecret)}))
+  response.end(JSON.stringify({ ...result, privateAuth: authenticationReceived && /^[A-Za-z0-9_-]{43}$/.test(receivedSecret) && !JSON.stringify(process.argv).includes(receivedSecret) && !JSON.stringify(process.env).includes(receivedSecret) }))
 })
 server.listen(0, '127.0.0.1', () => { listening = true; publishReady() })
 process.on('message', message => {
@@ -88,6 +100,16 @@ process.on('message', message => {
 process.send({ type: 'starting', runId: 'c254ab28-97c9-4382-95e6-2db9c66f98c8' })
 `
 
+const AUTHENTICATED_SERVER_START = `
+server.listen(0, '127.0.0.1', () => {
+  process.once('message', message => {
+    if (message.type !== 'desktop-auth' || !/^[A-Za-z0-9_-]{43}$/.test(message.secret)) throw new Error('invalid authentication handoff')
+    process.send({ type: 'ready', url: 'http://127.0.0.1:' + server.address().port + '/' })
+  })
+  process.send({ type: 'starting', runId: 'c254ab28-97c9-4382-95e6-2db9c66f98c8' })
+})
+`
+
 function projectWithHost(source = HTTP_HOST): string {
   const project = mkdtempSync(join(tmpdir(), 'dsh-desktop-host-test-'))
   roots.push(project)
@@ -112,6 +134,73 @@ afterEach(async () => {
 })
 
 describe('desktop host process', () => {
+  it('retains bounded child diagnostics for a failed runtime check', async () => {
+    const runtime = projectWithHost(HTTP_HOST.replace("server.listen(0, '127.0.0.1', () => {",
+      "process.stderr.write('x'.repeat(70000) + 'plugin load failed')\nserver.listen(0, '127.0.0.1', () => {"))
+    const host = hostProcess(runtime)
+    await host.start()
+    await host.stop()
+    expect(host.diagnostic.length).toBeLessThanOrEqual(64 * 1024)
+    expect(host.diagnostic.endsWith('plugin load failed')).toBe(true)
+  })
+
+  it('passes the sealed Host plugin list through a private launch file', async () => {
+    const runtime = projectWithHost(HTTP_HOST.replace('nodePath: process.env.NODE_PATH',
+      'nodePath: process.env.NODE_PATH, enterpriseOrigin: process.env.DSH_ENTERPRISE_SERVICE_ORIGIN'))
+    const allowed = Object.freeze(['@dsh-enterprise/harness-bundle', '@dsh-enterprise/harness-identity'].map(name => Object.freeze({
+      name, version: '1.0.0', path: join(runtime, 'node_modules', name),
+    })))
+    const trusted = Object.freeze([...allowed])
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined,
+      { ...process.env, DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://attacker.example.test' },
+      undefined, undefined, undefined, undefined, undefined, undefined, allowed, trusted,
+      undefined, 'https://enterprise.example.test')
+    hosts.push(host)
+    const { url } = await host.start()
+    const result = await (await fetch(url)).json() as {
+      allowlist: string | null
+      allowlistFile: string | null
+      inlineAllowlist: boolean
+      enterpriseOrigin: string
+    }
+    expect(result.enterpriseOrigin).toBe('https://enterprise.example.test')
+    expect(result.inlineAllowlist).toBe(false)
+    expect(result.allowlistFile).not.toBeNull()
+    expect(result.allowlistFile!.length).toBeLessThan(512)
+    expect(existsSync(result.allowlistFile!)).toBe(true)
+    expect(JSON.parse(result.allowlist!)).toEqual({
+      plugins: [...allowed], packages: [...trusted], enterpriseServiceOrigin: 'https://enterprise.example.test',
+    })
+    await host.stop()
+    expect(existsSync(result.allowlistFile!)).toBe(false)
+  })
+
+  it('keeps a large sealed Host plugin list out of the child command line', async () => {
+    const runtime = projectWithHost(HTTP_HOST.replace('nodePath: process.env.NODE_PATH',
+      'nodePath: process.env.NODE_PATH, enterpriseOrigin: process.env.DSH_ENTERPRISE_SERVICE_ORIGIN'))
+    const allowed = Object.freeze(Array.from({ length: 1_000 }, (_, index) => Object.freeze({
+      name: `@fixture/plugin-${String(index)}`,
+      version: '1.0.0',
+      path: join(runtime, 'node_modules', '@fixture', `plugin-${String(index)}`),
+    })))
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined,
+      process.env, undefined, undefined, undefined, undefined, undefined, undefined, allowed, allowed)
+    hosts.push(host)
+    const { url } = await host.start()
+    const result = await (await fetch(url)).json() as {
+      allowlist: string
+      allowlistBytes: number
+      inlineAllowlist: boolean
+      argvLength: number
+    }
+    expect(result.inlineAllowlist).toBe(false)
+    expect(result.allowlistBytes).toBeGreaterThan(32_767)
+    expect(result.argvLength).toBeLessThan(32_767)
+    const allowlist = JSON.parse(result.allowlist) as { plugins: typeof allowed }
+    expect(allowlist.plugins).toHaveLength(1_000)
+    await host.stop()
+  })
+
   it('retains the announced run identity when startup fails before readiness', async () => {
     const runtime = projectWithHost(`
 process.once('message', message => {
@@ -174,7 +263,7 @@ ${HTTP_HOST}`)
     onTestFinished(async () => { await journal.close() })
     const sink = vi.fn(value => journal.enqueue(JSON.stringify(value)))
     const first = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
-      undefined, undefined, undefined, undefined, sink)
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, sink)
     hosts.push(first)
     await first.start()
     await first.stop()
@@ -187,7 +276,8 @@ ${HTTP_HOST}`)
     try {
       const failure = vi.fn()
       const second = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
-        failure, undefined, undefined, undefined, () => { throw new Error('sink unavailable') })
+        failure, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        () => { throw new Error('sink unavailable') })
       hosts.push(second)
       await second.start()
       expect(await second.updateTasks('inspect')).toBe(false)
@@ -245,6 +335,354 @@ ${HTTP_HOST}`)
     expect(Date.now() - started).toBeGreaterThanOrEqual(QUIT_INSPECTION_DEADLINE_MS - 50)
     expect(await host.inspectQuit()).toEqual({ activeTasks: false, scheduledTasks: false })
   }, 15_000)
+
+  it('serves secure credential operations requested by the Host over private IPC', async () => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        if (request.url !== '/secure-store') { response.end('missing'); return }
+        const requests = [
+          { requestId: 51, operation: 'save-active-session', session: { companyId: 'company-1', refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43), employeeId: 'employee-1' } },
+          { requestId: 52, operation: 'rotate-refresh', expectedRefreshToken: 'A'.repeat(43), nextRefreshToken: 'D'.repeat(43) },
+          { requestId: 53, operation: 'clear-active-session' },
+          { requestId: 54, operation: 'acknowledge-revocation', value: 'B'.repeat(43) },
+          { requestId: 55, operation: 'queue-revocation', value: 'C'.repeat(43) },
+        ]
+        let index = 0
+        const onMessage = message => {
+          if (message.type !== 'secure-store-response' || message.requestId !== requests[index].requestId) return
+          if (!message.success) { response.statusCode = 500; response.end('failed'); process.off('message', onMessage); return }
+          if (requests[index].operation === 'rotate-refresh' && message.value !== true) {
+            response.statusCode = 500; response.end('missing rotate value'); process.off('message', onMessage); return
+          }
+          index += 1
+          if (index === requests.length) {
+            process.off('message', onMessage)
+            response.setHeader('content-type', 'application/json')
+            response.end(JSON.stringify({ accepted: index }))
+            return
+          }
+          process.send({ type: 'secure-store-request', ...requests[index] })
+        }
+        process.on('message', onMessage)
+        process.send({ type: 'secure-store-request', ...requests[index] })
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const secureStore = {
+      get: vi.fn(async () => null),
+      set: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined),
+      rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined),
+      queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, secureStore, undefined, ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST)
+    hosts.push(host)
+    const { url } = await host.start()
+    await expect((await fetch(new URL('/secure-store', url))).json()).resolves.toEqual({ accepted: 5 })
+    expect(secureStore.saveActiveSession).toHaveBeenCalledWith({ companyId: 'company-1', refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43), employeeId: 'employee-1' })
+    expect(secureStore.rotateRefresh).toHaveBeenCalledWith('A'.repeat(43), 'D'.repeat(43))
+    expect(secureStore.clearActiveSession).toHaveBeenCalledOnce()
+    expect(secureStore.acknowledgeRevocation).toHaveBeenCalledWith('B'.repeat(43))
+    expect(secureStore.queueRevocation).toHaveBeenCalledWith('C'.repeat(43))
+    await host.stop(true)
+  })
+
+  it.each([
+    'KongXiaoYang@ruqinba.com',
+    'zhang.san',
+  ])('applies the server employee identifier contract to session IPC: %s', async (employeeId) => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        const onMessage = message => {
+          if (message.type !== 'secure-store-response' || message.requestId !== 91) return
+          process.off('message', onMessage)
+          response.setHeader('content-type', 'application/json')
+          response.end(JSON.stringify({ success: message.success }))
+        }
+        process.on('message', onMessage)
+        process.send({ type: 'secure-store-request', requestId: 91, operation: 'save-active-session', session: { companyId: 'company-1', refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43), employeeId: ${JSON.stringify(employeeId)} } })
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const secureStore = {
+      get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined), queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, secureStore, undefined, ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST)
+    hosts.push(host)
+    const { url } = await host.start()
+    await expect((await fetch(url)).json()).resolves.toEqual({ success: true })
+    expect(secureStore.saveActiveSession).toHaveBeenCalledWith({ companyId: 'company-1', refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43), employeeId })
+    await host.stop(true)
+  })
+
+  it.each([
+    "{ companyId: 'company-1', employeeId: 'bad employee' }",
+    "{ companyId: 'company-1', employeeId: 'a+b' }",
+    "{ companyId: 'company.one', employeeId: 'employee-1' }",
+  ])('rejects out-of-contract session identifiers before dispatch: %s', async (identity) => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer(() => {
+        process.send({ type: 'secure-store-request', requestId: 92, operation: 'save-active-session', session: { ...${identity}, refreshToken: 'A'.repeat(43), logoutCapability: 'B'.repeat(43) } })
+      })
+      ${AUTHENTICATED_SERVER_START}
+    `)
+    let reportFailure!: (error: Error) => void
+    const failure = new Promise<Error>((resolve) => { reportFailure = resolve })
+    const secureStore = {
+      get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined), queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, reportFailure,
+      undefined, undefined, undefined, secureStore, undefined, ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST)
+    hosts.push(host)
+    const { url } = await host.start()
+    await expect(fetch(url)).rejects.toThrow()
+    expect((await failure).message).toMatch(/invalid IPC event/u)
+    await host.stop()
+    expect(secureStore.saveActiveSession).not.toHaveBeenCalled()
+  })
+
+  it('refuses secure credential IPC from a Host without the enterprise identity allowlist', async () => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        const onMessage = message => {
+          if (message.type !== 'secure-store-response' || message.requestId !== 81) return
+          process.off('message', onMessage)
+          response.setHeader('content-type', 'application/json')
+          response.end(JSON.stringify({ success: message.success, value: message.value ?? null }))
+        }
+        process.on('message', onMessage)
+        process.send({ type: 'secure-store-request', requestId: 81, operation: 'get', key: 'refresh' })
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const secureStore = {
+      get: vi.fn(async () => 'A'.repeat(43)),
+      set: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined),
+      rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined),
+      queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, secureStore)
+    hosts.push(host)
+    const { url } = await host.start()
+
+    await expect((await fetch(url)).json()).resolves.toEqual({ success: false, value: null })
+    expect(secureStore.get).not.toHaveBeenCalled()
+    await host.stop(true)
+  })
+
+  it('buffers enterprise identity before delivery is enabled and then publishes later accepted generations', async () => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      process.send({ type: 'enterprise-identity-change', state: { status: 'signed-out', generation: 1, pendingRevocation: false } })
+      const server = createServer((request, response) => {
+        if (request.url === '/next') process.send({ type: 'enterprise-identity-change', state: { status: 'signed-in', companyId: 'company-1', employeeId: 'employee-1', generation: 2, pendingRevocation: false } })
+        if (request.url === '/same-generation') process.send({ type: 'enterprise-identity-change', state: { status: 'signed-in', companyId: 'company-1', employeeId: 'employee-1', generation: 2, pendingRevocation: true } })
+        if (request.url === '/old') process.send({ type: 'enterprise-identity-change', state: { status: 'signed-out', generation: 1, pendingRevocation: true } })
+        response.end('sent')
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const changed = vi.fn()
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, undefined, undefined,
+      ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST, changed)
+    hosts.push(host)
+    const { url } = await host.start()
+    expect(changed).not.toHaveBeenCalled()
+    host.flushPendingEnterpriseIdentity()
+    expect(changed).toHaveBeenCalledWith({ status: 'signed-out', generation: 1, pendingRevocation: false })
+
+    await fetch(new URL('/next', url))
+    await expect.poll(() => changed.mock.calls.length).toBe(2)
+    expect(changed).toHaveBeenLastCalledWith({ status: 'signed-in', companyId: 'company-1', employeeId: 'employee-1', generation: 2, pendingRevocation: false })
+    await fetch(new URL('/same-generation', url))
+    await expect.poll(() => changed.mock.calls.length).toBe(3)
+    expect(changed).toHaveBeenLastCalledWith({ status: 'signed-in', companyId: 'company-1', employeeId: 'employee-1', generation: 2, pendingRevocation: true })
+    await fetch(new URL('/old', url))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(changed).toHaveBeenCalledTimes(3)
+    await host.stop(true)
+  })
+
+  it('starts a fresh enterprise identity generation for each authenticated Host process', async () => {
+    const changed = vi.fn()
+    const cookies: string[] = []
+    for (const generation of [9, 0]) {
+      const state = { status: 'signed-out', generation, pendingRevocation: false }
+      const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'",
+        `process.send({ type: 'enterprise-identity-change', state: ${JSON.stringify(state)} }); process.send({ type: 'ready'`))
+      const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+        undefined, undefined, undefined, undefined, undefined, undefined,
+        ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST, changed)
+      hosts.push(host)
+      cookies.push((await host.start()).authenticationCookie)
+      host.flushPendingEnterpriseIdentity()
+      expect(changed).toHaveBeenLastCalledWith(state)
+      await host.stop(true)
+    }
+    expect(changed).toHaveBeenCalledTimes(2)
+    expect(cookies[0]).not.toBe(cookies[1])
+  })
+
+  it('contains enterprise identity listener failures and ignores shutdown-time identity events', async () => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        process.send({ type: 'enterprise-identity-change', state: { status: 'signed-out', generation: 1, pendingRevocation: false } })
+        response.end('sent')
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type !== 'shutdown') return
+        process.send({ type: 'enterprise-identity-change', state: { status: 'signed-in', companyId: 'company-1', employeeId: 'employee-1', generation: 2, pendingRevocation: false } })
+        server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const failures: Error[] = []
+    const changed = vi.fn(() => { throw new Error('coordinator failed') })
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      (error) => { failures.push(error) }, undefined, undefined, undefined, undefined, undefined,
+      ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST, changed)
+    hosts.push(host)
+    const { url } = await host.start()
+    host.flushPendingEnterpriseIdentity()
+    await fetch(url)
+    await expect.poll(() => failures.length).toBe(1)
+    expect(failures[0]?.message).toMatch(/enterprise identity listener/u)
+    await host.stop()
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects enterprise identity events from non-enterprise Host processes', async () => {
+    const runtime = projectWithHost(`
+      process.send({ type: 'enterprise-identity-change', state: { status: 'signed-out', generation: 0, pendingRevocation: false } })
+      process.send({ type: 'ready', url: 'http://127.0.0.1:3080/' })
+    `)
+    const host = hostProcess(runtime)
+    await expect(host.start()).rejects.toThrow(/invalid IPC event/u)
+  })
+
+  it('opens HTTPS authorization URLs through the native system-browser callback', async () => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        const onMessage = message => {
+          if (message.type !== 'browser-open-response' || message.requestId !== 71) return
+          process.off('message', onMessage)
+          response.setHeader('content-type', 'application/json')
+          response.end(JSON.stringify({ success: message.success }))
+        }
+        process.on('message', onMessage)
+        process.send({ type: 'browser-open-request', requestId: 71, url: 'https://open.work.weixin.qq.com/oauth/authorize' })
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const opened: string[] = []
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, undefined, async (url) => { opened.push(url) },
+      ENTERPRISE_IDENTITY_ALLOWLIST, ENTERPRISE_IDENTITY_ALLOWLIST)
+    hosts.push(host)
+    const { url } = await host.start()
+
+    await expect((await fetch(new URL('/open-browser', url))).json()).resolves.toEqual({ success: true })
+    expect(opened).toEqual(['https://open.work.weixin.qq.com/oauth/authorize'])
+    await host.stop(true)
+  })
+
+  it('refuses browser-open IPC from a Host without the enterprise identity allowlist', async () => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        const onMessage = message => {
+          if (message.type !== 'browser-open-response' || message.requestId !== 82) return
+          process.off('message', onMessage)
+          response.setHeader('content-type', 'application/json')
+          response.end(JSON.stringify({ success: message.success }))
+        }
+        process.on('message', onMessage)
+        process.send({ type: 'browser-open-request', requestId: 82, url: 'https://open.work.weixin.qq.com/oauth/authorize' })
+      })
+      ${AUTHENTICATED_SERVER_START}
+      process.on('message', message => {
+        if (message.type === 'shutdown') server.close(() => { process.send({ type: 'shutdown-complete' }, () => process.disconnect()) })
+      })
+    `)
+    const opened: string[] = []
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
+      undefined, undefined, undefined, undefined, undefined, async (url) => { opened.push(url) })
+    hosts.push(host)
+    const { url } = await host.start()
+
+    await expect((await fetch(url)).json()).resolves.toEqual({ success: false })
+    expect(opened).toEqual([])
+    await host.stop(true)
+  })
+
+  it.each([
+    "{ type: 'secure-store-request', requestId: 61, operation: 'get', key: 'invalid-key' }",
+    "{ type: 'secure-store-request', requestId: 62, operation: 'rotate-refresh', expectedRefreshToken: 'A'.repeat(42), nextRefreshToken: 'B'.repeat(43) }",
+    "{ type: 'secure-store-request', requestId: 63, operation: 'rotate-refresh', expectedRefreshToken: 'A'.repeat(43), nextRefreshToken: 'B'.repeat(43), value: 'extra' }",
+  ])('rejects malformed secure-store IPC events before dispatch: %s', async (event) => {
+    const runtime = projectWithHost(`
+      import { createServer } from 'node:http'
+      const server = createServer((request, response) => {
+        process.send(${event})
+        response.end('sent')
+      })
+      ${AUTHENTICATED_SERVER_START}
+    `)
+    let reportFailure!: (error: Error) => void
+    const failure = new Promise<Error>((resolve) => { reportFailure = resolve })
+    const secureStore = {
+      get: vi.fn(async () => null), set: vi.fn(async () => undefined), delete: vi.fn(async () => undefined),
+      saveActiveSession: vi.fn(async () => undefined), rotateRefresh: vi.fn(async () => true),
+      clearActiveSession: vi.fn(async () => undefined),
+      acknowledgeRevocation: vi.fn(async () => undefined), queueRevocation: vi.fn(async () => undefined),
+    }
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, reportFailure,
+      undefined, undefined, undefined, secureStore)
+    hosts.push(host)
+    const { url } = await host.start()
+    await expect(fetch(new URL('/invalid', url))).rejects.toThrow()
+    expect((await failure).message).toMatch(/invalid IPC event/u)
+    expect(secureStore.get).not.toHaveBeenCalled()
+    expect(secureStore.rotateRefresh).not.toHaveBeenCalled()
+  })
 
   it.each([
     'process.exit(17)',

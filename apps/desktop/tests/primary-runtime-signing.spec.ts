@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { signWindowsPrimaryRuntime, signWindowsDesktopRuntime } from '../scripts/sign-primary-runtime.ts'
 import { inspectWindowsRuntimeSignature, preserveWindowsRuntimeSignature, windowsRuntimeCode, verifyWindowsCode, signWindowsCode } from '../scripts/windows-runtime-signature.mjs'
-import { runtimeFixture } from './runtime-fixture.ts'
-import { verifyDesktopRuntime } from '../src/runtime-tree.ts'
+import { runtimeFixture, writePackage } from './runtime-fixture.ts'
+import { verifyDesktopRuntime, writeDesktopRuntime } from '../src/runtime-tree.ts'
 import { createPackagingRun } from '../scripts/packaging-run.mjs'
 
 const roots: string[] = []
@@ -307,6 +307,38 @@ it('records signed dependency bytes before smoke and rejects changes after smoke
   await expect(signWindowsDesktopRuntime(root, '1.0.0', { ...options,
     smoke: async () => { await writeFile(join(root, 'dependency.node'), 'mutated') },
   })).rejects.toThrow('integrity')
+})
+
+it('retains sealed enterprise companies and approved packages while resealing signed bytes', async () => {
+  const root = await fixture(['dependency.node'])
+  const original = runtimeFixture(root)
+  const bundle = '@dsh-enterprise/harness-bundle'
+  writePackage(join(root, 'node_modules'), bundle, { dsh: { enterprise: { allowedHostPluginNames: [bundle] } } })
+  const companies = [
+    { companyId: 'one', displayName: 'Company One', serviceOrigin: 'https://one.example.test' },
+    { companyId: 'two', displayName: 'Company Two', serviceOrigin: 'https://two.example.test' },
+  ]
+  const sealed = writeDesktopRuntime(root, original.release, [...original.sharedPackages.map(entry => entry.name), bundle], {
+    platform: process.platform, arch: process.arch, enterpriseServiceOrigin: companies[0]!.serviceOrigin, enterpriseCompanies: companies,
+  })
+  const smoke = vi.fn(async (descriptor: Awaited<ReturnType<typeof verifyDesktopRuntime>>) => {
+    expect(descriptor).toMatchObject({ platform: process.platform, arch: process.arch, enterpriseCompanies: companies,
+      enterpriseServiceOrigin: companies[0]!.serviceOrigin, allowedHostPlugins: sealed.allowedHostPlugins,
+      trustedHostPackages: sealed.trustedHostPackages })
+  })
+  let signed = false
+  await signWindowsDesktopRuntime(root, original.release.version, {
+    thumbprint, record: () => {}, inspect: async () => signed ? valid : unsigned,
+    sign: async ({ path }) => {
+      await writeFile(path, Buffer.concat([await readFile(path), Buffer.from('signature')]))
+      signed = true
+    }, smoke,
+  })
+  expect(smoke).toHaveBeenCalledOnce()
+  const verified = await verifyDesktopRuntime(root, original.release.version)
+  expect(verified.enterpriseCompanies).toEqual(companies)
+  expect(verified.files.find(file => file.path === 'dependency.node'))
+    .not.toEqual(sealed.files.find(file => file.path === 'dependency.node'))
 })
 
 it('bounds public-key inspection to four files and drains a failed batch before returning', async () => {

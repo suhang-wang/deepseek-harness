@@ -19,6 +19,7 @@ Build Desktop installers locally or through Windows or macOS Actions, choose dep
 - [macOS self-hosted packaging](#macos-actions)
 - [Unsigned Windows test installer](#unsigned-windows-test-installer)
 - [Local macOS DMG without release signing](#local-macos-dmg-without-release-signing)
+- [Local enterprise package preparation](#local-enterprise-package-preparation)
 - [macOS release signing and diagnostics](#macos-release-signing)
 - [Directory builds and preparation](#directory-and-preparation)
 - [Local Official bundles from a loopback registry](#local-official-bundles-from-a-loopback-registry)
@@ -69,7 +70,7 @@ The installer embeds `DSH_DESKTOP_UPDATE_CHANNEL` (`nightly` by default, or `sta
 
 ## Configuration and local builds
 
-Unsigned macOS and Windows packages use the same localized **DSH Local Build** label and version/commit badge as local Web builds. Signed packages keep official branding, including test deployments and macOS builds that skip notarization. Native application and installer names are unchanged.
+Unsigned macOS and Windows packages use the `local` client build profile, with the same default localized **DSH Local Build** label and version/commit badge as local Web builds. Signed packages use `official`, including test deployments and macOS builds that skip notarization. Company packaging supplies `DSH_CLIENT_TITLE` through `DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME` without changing that profile selection. Native application and installer names are unchanged.
 
 Set `DSH_PACKAGING_CONFIG_DIR` to the absolute machine configuration directory and `DSH_PACKAGING_PRESET` to `test` or `production` for local Windows commands. The loader reads `presets/<preset>.env`; signed commands additionally read `secrets/windows-signing.env`. Relative certificate and SignTool paths resolve beside the file declaring them. Public presets reject credentials, and the signing file cannot override public settings. Missing configuration fails without falling back to `.env.windows`; commands without a preset retain the existing dotenv behavior. Unsigned and preparation-only presets never read the signing file. Cache maintenance also reads only public preset settings. Test signed packages also require the existing download origin and release ID, but no upload credentials. Local preset commands with `--build-version auto` number from local artifacts only; Actions uses its run number and attempt.
 
@@ -178,6 +179,28 @@ Add `--check` to validate local configuration and tools without building, or `--
 
 These commands ignore `.env.macos` and inherited release settings, use `com.deepseek.harness` as the app ID, and omit automatic-update and mandatory-update configuration. Build tools, standard network proxies, and `DSH_DESKTOP_NPM_REGISTRY` remain available from the shell. They skip Developer ID signing, Apple notarization, temporary signing keychains, and notarization proxy changes. Electron receives a local ad-hoc signature without certificates so the modified executable can run; the DMG is unsigned. Both preparation and the assembled application still run runtime integrity and smoke checks. Local builds omit update feeds, ZIPs, and release completion records, and the upload commands cannot publish them. macOS may require approval in System Settings → Privacy & Security to open an unnotarized application. These builds stage no Computer Use helper, so Computer Use reports the missing helper when it prepares.
 
+<a id="local-enterprise-package-preparation"></a>
+
+## Local enterprise package preparation
+
+From this repository, pass the adjacent enterprise repository and the approved enterprise service origin explicitly to the macOS arm64 package command:
+
+```sh
+pnpm run package:desktop:mac:arm64:unsigned -- --dir --enterprise-packages ../deepseek-harness-enterprise --enterprise-service-origin https://127.0.0.1:3443
+```
+
+The command builds the enterprise workspace, packs its identity, provider, UI, and bundle packages, and includes the bundle dependency closure in the Desktop package set. It binds the HTTPS origin into the packaged runtime descriptor and writes the unpacked application to `apps/desktop/.desktop-build/enterprise/targets/mac-arm64/unsigned-artifacts/mac-arm64/DeepSeek Harness Enterprise.app`; preparation remains under the same enterprise target directory. The unsigned enterprise build uses the provisional `com.deepseek.harness.enterprise.local` app ID, `DeepSeek Harness Enterprise` product name, `dsh-enterprise` URL scheme, and enterprise artifact names. Its packaged manifest marks `dshDesktopEdition=enterprise`. The service origin must be a canonical HTTPS origin without credentials, path, query, or fragment. The local Host smoke uses a synthetic profile and service and does not establish real WeCom login.
+
+For a company-specific client, copy [enterprise-profile.example.json](../enterprise-profile.example.json) to a private, non-secret profile file and set its `appId`, `productName`, `protocolScheme`, and `serviceOrigin`. For one installation serving up to two companies, start from [enterprise-profile.multi-company.example.json](../enterprise-profile.multi-company.example.json) and add `companies`: one or two entries with unique `companyId`, `displayName`, and canonical HTTPS `serviceOrigin` values whose first origin equals `serviceOrigin`. The client then opens a company picker, keeps one company active at a time, stores separate sessions and data spaces, and switches companies with a restart; the Windows workflow's `enterprise_profile` input must point to a committed profile that contains `companies`. Pass `--enterprise-profile path/to/company.json` with `--enterprise-packages` in place of `--enterprise-service-origin` on macOS arm64 or Windows x64. Paths resolve from this repository root. The app ID, name, and scheme must differ between clients installed on one computer; the profile supplies the packaged app-open URL handler and a distinct artifact filename. Custom clients keep preparation and output under `.desktop-build/enterprise/companies/<appId>/targets/<target>/`, so building a second company does not overwrite the first company's package. Each app ID also selects separate installed profiles and encrypted session files. Signed custom enterprise builds require the same distinct name and scheme. Custom app IDs also namespace their update feeds as `dsh-enterprise/<appId>/...`, even when companies share an update origin; the provisional legacy client keeps its existing feed path. WeCom's HTTPS login callback is configured separately on each company's backend. The service origin stays fixed inside the packaged runtime. Keep WeCom and provider secrets only on each company's server. Existing commands without a profile keep the provisional identity.
+
+The unsigned Windows x64 enterprise installer passes the same enterprise package selection to `package:desktop:win:x64:unsigned` and builds on a Windows x64 host. It reads `.env.windows`, which supplies the provisional app ID unless a company profile overrides it and, unlike the macOS unsigned path, still requires the selected mandatory-update origin. The installer is written under `apps/desktop/.desktop-build/enterprise/targets/win-x64/unsigned-artifacts`. Its refresh and logout credentials are encrypted by Electron safeStorage using Windows DPAPI before the WeCom QR attempt begins; access tokens stay in Host memory. DPAPI protects against other Windows users, but not arbitrary processes running as the same user. The manual `windows-enterprise-package.yml` workflow accepts a profile path within the private enterprise repository and produces an unsigned development installer; it does not qualify a signed employee release.
+
+The enterprise welcome window displays WeCom's QR login and checks the same authorization attempt automatically; the [authentication design](../../../docs/enterprise/technical-design.md#authentication) owns the flow and browser alternative.
+
+Signed enterprise macOS arm64 packaging uses the same two enterprise arguments without `--unsigned`. It reads `.env.macos`, including an explicit reverse-DNS `DSH_DESKTOP_APP_ID` owned by the enterprise publisher, its Developer ID signing inputs, notarization credentials, and `DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN`. The signed build rejects the ordinary `com.deepseek.harness` namespace and the provisional enterprise ID. It requires an explicit enterprise HTTPS update origin and writes feeds under `dsh-enterprise/` instead of the ordinary `dsh-desk/` path; `download.deepseek.com` is rejected. Confirm the identifier and update origin ownership before release; the build can validate their shape and isolation, but cannot prove domain ownership. Enterprise update publication and version-window qualification belong to the later update feature. Real WeCom login still requires a trusted callback domain and approved WeCom credentials.
+
+The packaged Desktop and Host use the origin in the sealed descriptor in place of inherited shell or dotenv values; identity and provider settings that name another origin stop startup before either plugin loads.
+
 <a id="macos-release-signing"></a>
 
 ## macOS release signing and diagnostics
@@ -270,9 +293,13 @@ When extraction fails, the installer writes a report with the 7-Zip result and i
 
 Windows packaging fixes the 7-Zip filter to `BCJ` for compatibility with the bundled NSIS decoder. This preserves ARM64 binaries carried by dependencies in x64 installers; automatic ARM64 filtering produces entries that this decoder cannot extract.
 
+Windows packaging generates the NSIS bootstrap and uninstaller under unique short temporary names in the artifact directory. The final installer keeps its configured artifact name. Packaging rejects output paths that exceed the Windows limit and reports a missing or empty generated uninstaller before assembling the final installer. Use a shorter checkout path if the artifact directory itself is too long.
+
 `DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL` in the Windows dotenv or machine preset selects installer archive compression from `0` to `9`. If omitted, the existing `ELECTRON_BUILDER_COMPRESSION_LEVEL` environment override remains effective, otherwise the default is `3` for both test and production. The manual Windows workflow's `compression_level` dropdown defaults to `3` and also offers `7`, matching the Mac ZIP choices; it overrides the file setting for that run. Direct local builds retain explicit machine settings. Mac ZIP workflow overrides must be `3` or `7`; an empty value is invalid even on macOS. Any defined Mac ZIP workflow override, including an empty value, rejects Windows; nonempty Windows workflow overrides reject macOS. Lower levels trade installer size for packaging time; qualify the complete signed workflow and artifact size before changing a release preset.
 
 NSIS removes its temporary extraction tree during installation, before the completion page or an automatic launch. The installed production packages remain ordinary files; startup does not extract them again. Installation still writes the complete application tree.
+
+Windows packaged-runtime checks copy the complete assembled application to a private temporary directory before launching it, using its physical path so Windows short-name aliases do not create different module-resolution roots. This keeps ConPTY DLL paths below the native dependency’s legacy path limit even when company build directories are deeply nested. Plugin-route failures retain the HTTP status, a bounded response excerpt, and bounded Host stderr with the smoke login token redacted. The checks retain real PTY allocation and remove the copy after success or failure; signed builds verify the copied application. Passing this check does not establish support for arbitrary long installation paths.
 
 <a id="desktop-runtime-preparation"></a>
 

@@ -106,6 +106,10 @@ const NAMESPACES = [
 function api(overrides: {
   accountAvailable?: boolean
   providers?: () => Promise<RpcResponse<{ providers: typeof DIRECTORY }>>
+  catalog?: () => Promise<RemoteAnswer<{
+    groups: readonly { id: string; name?: string; models: readonly { id: string; name?: string }[] }[]
+    failures?: readonly { id: string }[]
+  }>>
   describeSettings?: () => Promise<RemoteAnswer<{ writable: boolean; hasDocument: boolean; namespaces: typeof NAMESPACES }>>
   describeCredentials?: (refs: readonly string[]) => Promise<RemoteAnswer<Record<string, unknown>>>
 } = {}) {
@@ -129,8 +133,8 @@ function api(overrides: {
       : remoteFail(response.result.error.message)
   }
   const face = {
-    session: { modelCatalog: async () => remoteOk({ groups: overrides.accountAvailable
-      ? [{ id: 'deepseek-account', models: [{ id: 'deepseek-flash' }] }] : [] }) },
+    session: { modelCatalog: overrides.catalog ?? (async () => remoteOk({ groups: overrides.accountAvailable
+      ? [{ id: 'deepseek-account', models: [{ id: 'deepseek-flash' }] }] : [], failures: [] })) },
     llm: {
       listProviders: () => mapProviderBatch(rows => rows
         .filter(row => row.active)
@@ -162,6 +166,89 @@ function api(overrides: {
 }
 
 describe('ModelsSettingsStore', () => {
+  it('refreshes only the current employee-visible models for a managed provider', async () => {
+    const providers = [...DIRECTORY, {
+      provider: 'enterprise', displayName: '企业模型',
+      settingsNs: 'enterprise-provider', settingsPath: [], active: true,
+    }]
+    let catalogRead = 0
+    const { ctx, mirror } = api({
+      providers: () => Promise.resolve(ok({ providers })),
+      catalog: async () => {
+        catalogRead += 1
+        if (catalogRead === 3) return remoteFail('private upstream error')
+        if (catalogRead === 4) throw new Error('transport offline')
+        if (catalogRead === 5) return remoteOk({
+          groups: [{ id: 'enterprise', models: [] }],
+          failures: [{ id: 'enterprise' }],
+        })
+        return remoteOk({
+          groups: [{ id: 'enterprise', models: catalogRead === 1
+            ? [{ id: 'qwen-local:Qwen3.8-27B', name: '本地 Qwen · Qwen3.8-27B' }, { id: 'deepseek:deepseek-flash', name: 'DeepSeek · Flash' }]
+            : [{ id: 'qwen-local:Qwen3.8-27B', name: '本地 Qwen · Qwen3.8-27B' }] }],
+          failures: [],
+        })
+      },
+    })
+    const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)
+    const managed = () => store.store.getSnapshot().rows.find(row => row.entry.provider === 'enterprise')
+
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'ready', models: [
+      { id: 'qwen-local:Qwen3.8-27B', name: '本地 Qwen · Qwen3.8-27B' },
+      { id: 'deepseek:deepseek-flash', name: 'DeepSeek · Flash' },
+    ] })
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'ready', models: [
+      { id: 'qwen-local:Qwen3.8-27B', name: '本地 Qwen · Qwen3.8-27B' },
+    ] })
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'error', models: [] })
+    expect(store.store.getSnapshot().status).toBe('ready')
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'error', models: [] })
+    await store.load()
+    expect(managed()?.managedCatalog).toEqual({ status: 'error', models: [] })
+  })
+
+  it('drops a stale catalog answer after a newer load publishes', async () => {
+    const firstCatalog = Promise.withResolvers<RemoteAnswer<{
+      groups: readonly { id: string; name?: string; models: readonly { id: string; name?: string }[] }[]
+      failures?: readonly { id: string }[]
+    }>>()
+    const catalogStarted = Promise.withResolvers<undefined>()
+    let catalogRead = 0
+    const providers = [...DIRECTORY, {
+      provider: 'enterprise', displayName: '企业模型',
+      settingsNs: 'enterprise-provider', settingsPath: [], active: true,
+    }]
+    const { ctx, mirror } = api({
+      providers: () => Promise.resolve(ok({ providers })),
+      catalog: async () => {
+        catalogRead += 1
+        if (catalogRead === 1) {
+          catalogStarted.resolve(undefined)
+          return firstCatalog.promise
+        }
+        return remoteOk({ groups: [{ id: 'enterprise', models: [{ id: 'qwen-local:Qwen3.8-27B', name: '新模型' }] }], failures: [] })
+      },
+    })
+    const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)
+    const first = store.load()
+    await catalogStarted.promise
+    const second = store.load()
+    await second
+    const managed = () => store.store.getSnapshot().rows.find(row => row.entry.provider === 'enterprise')
+    expect(managed()?.managedCatalog).toEqual({ status: 'ready', models: [
+      { id: 'qwen-local:Qwen3.8-27B', name: '新模型' },
+    ] })
+    firstCatalog.resolve(remoteOk({ groups: [{ id: 'enterprise', models: [{ id: 'stale', name: '旧模型' }] }], failures: [] }))
+    await first
+    expect(managed()?.managedCatalog).toEqual({ status: 'ready', models: [
+      { id: 'qwen-local:Qwen3.8-27B', name: '新模型' },
+    ] })
+  })
+
   it('describes native variables without exposing secret values and respects the 64-reference limit', async () => {
     const providers = Array.from({ length: 65 }, (_, index) => ({
       provider: `fixture-${index}`, displayName: 'fixture', settingsNs: 'llm-pi-ai', settingsPath: ['providers', `fixture-${index}`], active: false,

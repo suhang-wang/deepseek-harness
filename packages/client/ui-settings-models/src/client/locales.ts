@@ -145,6 +145,10 @@ export const en = {
   fetchAdopt: 'Update list',
   fetchKeepOne: 'Keep at least one model checked.',
   customTag: 'Custom',
+  managedTag: 'Managed externally',
+  managedModelsLoading: 'Loading company models…',
+  managedModelsUnavailable: 'Could not load company models.',
+  noManagedModels: 'No company models available.',
   customRoute: 'Provider ID',
   customRouteHint: 'Lowercase identifier, starting with a letter, that uniquely names this provider in requests and as its credential name.',
   customRouteInvalid: 'Start with a lowercase letter; then lowercase letters, digits, and dashes.',
@@ -325,6 +329,10 @@ export const zh: { [Key in keyof typeof en]: string } = {
   fetchAdopt: '更新列表',
   fetchKeepOne: '请至少保留一个勾选的模型。',
   customTag: '自定义',
+  managedTag: '外部管理',
+  managedModelsLoading: '正在加载企业模型…',
+  managedModelsUnavailable: '无法加载企业模型。',
+  noManagedModels: '当前没有可用的企业模型。',
   customRoute: 'Provider ID',
   customRouteHint: '以小写字母开头的标识，在请求中唯一标识该提供商，并用于派生凭据名。',
   customRouteInvalid: '需以小写字母开头，之后可用小写字母、数字和短横线。',
@@ -359,6 +367,10 @@ export const zh: { [Key in keyof typeof en]: string } = {
 
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  managedTag: '外部管理',
+  managedModelsLoading: '企業のモデルを読み込み中…',
+  managedModelsUnavailable: '企業のモデルを読み込めませんでした。',
+  noManagedModels: '利用可能な企業のモデルはありません。',
   'nav': 'モデル',
   'deepSeekAccount': 'DeepSeekアカウント',
   'title': 'モデル',
@@ -536,6 +548,10 @@ export const ja = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  managedTag: 'Gestionado externamente',
+  managedModelsLoading: 'Cargando modelos de la empresa…',
+  managedModelsUnavailable: 'No se pudieron cargar los modelos de la empresa.',
+  noManagedModels: 'No hay modelos de la empresa disponibles.',
   nav: 'Modelos',
   deepSeekAccount: 'Cuenta DeepSeek',
   title: 'Modelos',
@@ -713,6 +729,10 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  managedTag: 'Gestion externe',
+  managedModelsLoading: 'Chargement des modèles de l’entreprise…',
+  managedModelsUnavailable: 'Impossible de charger les modèles de l’entreprise.',
+  noManagedModels: 'Aucun modèle d’entreprise disponible.',
   nav: 'Modèles',
   deepSeekAccount: 'Compte DeepSeek',
   title: 'Modèles',
@@ -890,6 +910,10 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  managedTag: 'Extern verwaltet',
+  managedModelsLoading: 'Unternehmensmodelle werden geladen…',
+  managedModelsUnavailable: 'Unternehmensmodelle konnten nicht geladen werden.',
+  noManagedModels: 'Keine Unternehmensmodelle verfügbar.',
   nav: 'Modelle',
   deepSeekAccount: 'DeepSeek-Konto',
   title: 'Modelle',
@@ -1067,6 +1091,10 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  managedTag: 'Внешнее управление',
+  managedModelsLoading: 'Загрузка моделей компании…',
+  managedModelsUnavailable: 'Не удалось загрузить модели компании.',
+  noManagedModels: 'Нет доступных моделей компании.',
   nav: 'Модели',
   deepSeekAccount: 'DeepSeek Аккаунт',
   title: 'Модели',
@@ -1244,6 +1272,10 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  managedTag: 'Gerenciado externamente',
+  managedModelsLoading: 'Carregando modelos da empresa…',
+  managedModelsUnavailable: 'Não foi possível carregar os modelos da empresa.',
+  noManagedModels: 'Nenhum modelo da empresa disponível.',
   nav: 'Modelos',
   deepSeekAccount: 'DeepSeek Conta',
   title: 'Modelos',

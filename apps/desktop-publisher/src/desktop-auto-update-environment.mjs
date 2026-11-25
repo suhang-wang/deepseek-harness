@@ -159,19 +159,36 @@ function httpsOrigin(value, name) {
  * @param {string} arch - Target Node.js architecture.
  * @returns {{ environment: 'test' | 'production', channel: 'nightly' | 'stable', target: 'mac-arm64' | 'mac-x64' | 'win-x64', origin: string, publicUrl: string, keyPrefix: string, binaryKeyPrefix: string }} Resolved updater configuration.
  * @throws {Error} When the test deployment lacks a valid HTTPS origin or a 32-character lowercase hexadecimal release ID.
+ * @throws {Error} When the enterprise origin is missing, invalid, or official, or a supplied enterprise app ID is not a non-empty reverse-DNS identifier.
  */
 export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
   const channel = resolveDesktopUpdateChannel(env)
   const environment = resolveDesktopAutoUpdateEnvironment(env)
   const target = resolveDesktopAutoUpdateTarget(platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[environment]
-  let origin = deployment.fixedOrigin
+  const enterprise = env.DSH_DESKTOP_ENTERPRISE_MODE === '1'
+  let origin = enterprise
+    ? httpsOrigin(requiredEnvironmentValue(env, 'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN'), 'DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN')
+    : deployment.fixedOrigin
+  if (enterprise && origin === 'https://download.deepseek.com') {
+    throw new Error('desktop auto-update: enterprise update origin must not use the official DeepSeek download host')
+  }
   if (origin === undefined) {
     const { originEnvName } = deployment
     if (originEnvName === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
     origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
   }
-  let releasePrefix = 'dsh-desk'
+  const enterpriseAppId = enterprise && env.DSH_DESKTOP_APP_ID !== undefined
+    ? requiredEnvironmentValue(env, 'DSH_DESKTOP_APP_ID')
+    : undefined
+  if (enterpriseAppId !== undefined && !/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u.test(enterpriseAppId)) {
+    throw new Error('desktop auto-update: DSH_DESKTOP_APP_ID must be a reverse-DNS identifier')
+  }
+  let releasePrefix = enterprise
+    ? enterpriseAppId === undefined || enterpriseAppId === 'com.deepseek.harness.enterprise.local'
+      ? 'dsh-enterprise'
+      : `dsh-enterprise/${enterpriseAppId}`
+    : 'dsh-desk'
   if (environment === 'test') {
     const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')
     if (!/^[a-f0-9]{32}$/u.test(releaseId)) {
@@ -200,6 +217,9 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
  * @throws {Error} When the selected deployment lacks a bucket or valid updater configuration.
  */
 export function resolveDesktopUploadConfig(env, platform, arch) {
+  if (env.DSH_DESKTOP_ENTERPRISE_MODE === '1') {
+    throw new Error('desktop auto-update: enterprise upload requires a qualified enterprise release publisher')
+  }
   const update = resolveDesktopAutoUpdateConfig(env, platform, arch)
   const deployment = UPDATE_ENVIRONMENTS[update.environment]
   return {

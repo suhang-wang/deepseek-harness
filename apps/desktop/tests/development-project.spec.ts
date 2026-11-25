@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { prepareDevelopmentProject } from '../scripts/development-project.ts'
+import { createHash } from 'node:crypto'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
+import { readDesktopRuntime } from '../src/runtime-tree.ts'
 import { DesktopProjectManager } from '../src/project-manager.ts'
 import { resolveDesktopPaths } from '../src/paths.ts'
 import type { DesktopRelease } from '../src/release.ts'
@@ -51,6 +53,16 @@ describe('desktop development project', () => {
     const descriptor = JSON.parse(readFileSync(join(project, 'desktop-runtime.json'), 'utf8')) as { platform: string; arch: string; sharedPackages: unknown[] }
     expect(descriptor).toMatchObject({ platform: 'darwin', arch: 'arm64' })
     expect(descriptor.sharedPackages).toContainEqual({ name: 'unhoisted', version: '1.2.3', path: 'node_modules/unhoisted' })
+    const runtime = readDesktopRuntime(project)
+    expect(runtime.trustedHostPackages.map(entry => entry.path)).toEqual([
+      'node_modules/@deepseek-ai/dsh', 'node_modules/@deepseek-ai/dsh-desktop-host', 'node_modules/unhoisted',
+    ])
+    expect(runtime.files.map(entry => entry.path)).toEqual(runtime.trustedHostPackages.map(entry => `${entry.path}/package.json`))
+    for (const entry of runtime.files) {
+      const bytes = readFileSync(join(project, entry.path))
+      expect(entry.bytes).toBe(bytes.byteLength)
+      expect(entry.sha256).toBe(createHash('sha256').update(bytes).digest('hex'))
+    }
   })
 
   it('manages development plugins without modifying the linked workspace packages', async () => {

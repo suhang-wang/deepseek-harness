@@ -55,6 +55,20 @@ describe('official browser-brand plugin', () => {
     expect(subject.slots.entries('conversation.hero.frame')).toHaveLength(1)
   })
 
+  it('registers company branding in an unsigned local company build', async () => {
+    vi.stubEnv('DSH_CLIENT_BUILD_PROFILE', 'local')
+    vi.stubEnv('DSH_CLIENT_TITLE', '企业工作台')
+    const subject = await bench()
+    try {
+      const fiber = subject.ctx.plugin({ inject: [...inject], apply })
+      await fiber.await()
+      expect(subject.slots.entries('sidebar.brand.mark')).toHaveLength(1)
+      expect(subject.slots.entries('sidebar.brand.name')).toHaveLength(1)
+      await fiber.dispose()
+      expect(subject.slots.entries('sidebar.brand.name')).toHaveLength(0)
+    } finally { await subject.ctx.fiber.dispose() }
+  })
+
   it('fills declarations before or after apply and removes every occupant on teardown', async () => {
     vi.stubEnv('DSH_CLIENT_BUILD_PROFILE', 'official')
     const before = await bench()
@@ -84,6 +98,34 @@ describe('official browser-brand plugin', () => {
     const subject = await bench()
     await subject.ctx.plugin({ inject: [...inject], apply }).await()
     expect(subject.slots.entries(HERO_HOLE)).toHaveLength(0)
+  })
+
+  it('renders the packaged company name and initial for a company build', () => {
+    vi.stubEnv('DSH_CLIENT_TITLE', 'Ruqinba Harness')
+    const name = render(<OfficialBrandName />)
+    expect(name.container.textContent).toBe('Ruqinba Harness')
+    name.unmount()
+
+    const mark = render(<OfficialBrandMark size={32} />)
+    expect(mark.container.textContent).toBe('R')
+    expect(mark.container.querySelector('span')?.style.width).toBe('32px')
+  })
+
+  it('keeps the fallback brand initial for a whitespace-only company title', () => {
+    vi.stubEnv('DSH_CLIENT_TITLE', '   ')
+    const mark = render(<OfficialBrandMark size={32} />)
+    expect(mark.container.textContent).toBe('H')
+  })
+
+  it('prefers the host company title over the compiled build title', () => {
+    vi.stubEnv('DSH_CLIENT_TITLE', '企业工作台')
+    vi.stubGlobal('dshDesktop', { brandTitle: '企业工作台 · B 公司' })
+    const name = render(<OfficialBrandName />)
+    expect(name.container.textContent).toBe('企业工作台 · B 公司')
+    name.unmount()
+
+    const mark = render(<OfficialBrandMark size={32} />)
+    expect(mark.container.textContent).toBe('企')
   })
 
   it('registers the whale as a self-contained frame layer without replacing the hero mark', async () => {

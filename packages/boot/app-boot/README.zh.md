@@ -55,6 +55,10 @@ profile 导入插件前，DSH 会将其声明的 DSH 版本要求与 `getDshRunt
 
 检查只发生在 DSH 自己持有的组合入口，改写的是启动器自己的那份组合：profile 的 patch 层、依赖清单与组合包列表都不会改变。`prepareProfilePatches` 在启动器的空 profile 根之上组合，并在挂载根 Include 时以及每次 profile 重新组合时执行，因此被拒绝的插件永远不会导入其模块；`prepareProfileEntries` 对 preset 行做同样的事。被拒绝的普通行会变成游离的 `disabled: true` 行；原生 group 保持挂载，其被拒绝的子行不会加载；若某个原生 Include 会到达被拒绝的插件，则整体省略该 Include，因为它的文件不会被改写。被策略拒绝的行在 profile 中保留其配置的 `disabled` 值，每次拒绝都会报告包名、版本与风险。组合包本身不是行，因此 `loadProfileDirectory` 在启动和每次重新组合加载 profile 的组合包层时，检查每个组合包自己声明的 DSH 版本要求；没有豁免的不兼容组合包会像无法读取的组合包一样被跳过，并列入 `skippedBundles`。这些入口不覆盖其他嵌入方通过自己的 `ctx.plugin` 调用挂载的插件。会话中直接改文件的两类编辑只在下一次重新组合或启动时才被判定：正在运行的插件自己的 `package.json` DSH 版本要求，以及 Loader 自己读取的入口清单文件（如启动器的根配置或嵌套的 `cordis:include` 文件）。`--dump-config` 报告的是配置出的组合，因此被拒绝的插件行仍会出现在其中，而被拒绝的组合包不提供任何行；`--dump-config-schema` 会导入每个组合模块以读取其 schema，请只对已经信任其插件的 profile 运行。
 
+原生 Desktop 提供已签名的企业服务地址时，组合检查在导入前核对最终的身份与模型提供方条目，包括 profile 和 home patch 的修改。每个条目必须使用该 HTTPS origin 原文，或使用由原生 Host 绑定的 `!!js process.env.DSH_ENTERPRISE_SERVICE_ORIGIN` 表达式；地址不一致时组合停止。
+
+受管 Host 通过启动器持有的 profile 数据提供 `allowedHostPlugins` 和 `trustedHostPackages`。准入要求获准插件的包名、精确版本和真实目录匹配，并对照可信运行时目录验证其声明的依赖闭包。原生 group 和 Include 会递归检查；无法检查的 Include 会被拒绝。这些检查限制配置组合，不限制已准入代码的任意行为。
+
 精确版本豁免保存在 profile 自己的 `compatibility.json` 中，而不是 `package.json`，因此写豁免不会触及依赖清单、组合包列表或 Cordis patch 文件。它把精确的 `package-name@version` 键映射到精确 DSH 运行时版本列表；插件升级和 DSH 升级都不继承授权。文件缺失表示没有豁免。文件损坏绝不会阻止 profile 启动：读取器接受的记录仍然生效，每条被拒绝的记录会与插件拒绝信息一起输出到 stderr，此后该文件被视为只读，因此授予或撤销会拒绝执行并要求用户手工修复，而不是覆盖用户的内容。[插件管理器](../plugin-manager/README.zh.md#version-compatibility-and-exemptions)负责每次变更所需的授权、撤销与风险确认。`validatePluginVersionExemption(packageVersion, runtimeVersion)` 校验规范的精确身份而不授予权限；身份非法时抛出错误。
 
 组合包可以用 `dsh.bundle.platforms` 声明非空的 Node Host 平台名称列表，例如 `["darwin"]`。 额外的 `wsl` 值允许带有 WSL 进程或内核标记的 Linux Host；`linux` 仍允许所有 Linux Host。平台准入不代表 Windows 互操作或桌面已可用。启动器在读取组合包 patch 前验证此声明。Host 不受支持时会跳过整个配置层，保留已保存的选择，并通过 `skippedBundles` 报告原因；其他配置层继续生效。省略此字段时允许所有平台。值必须是 Node 平台名或 `wsl`，`macos` 等别名无效。浏览器所在机器的平台不决定 Host 是否受支持。
@@ -133,7 +137,7 @@ Loader 结算后，app-boot 在仅 optional 条目未激活时输出警告。如
 ### 设计说明
 
 - **运行时版本。** `getDshRuntimeVersion()` 通过文件系统路径读取本包清单，也支持可执行文件内的虚拟文件系统；版本缺失或无效时会失败，而不会绕过兼容性检查。
-- **Profile 启动数据。** `ctx.profileContext` 只包含 profile 位置、启动时组合包名称、调用级 overlay 的绝对路径与遥测退出值。`readProfilePatches()` 组合传入的启动 profile，或读取这些位置上的当前文件，并且总是重新读取 overlay 文件；调用方负责调度和应用结果。插件管理器的列表与 Config Editor 的写入无论是否启用 HMR 都调用它，因此会读到当前 overlay 内容，并在 overlay 文件缺失或无效时失败。
+- **Profile 启动数据。** `ctx.profileContext` 包含 profile 位置、启动时组合包名称、调用时的绝对 `overlayPaths`、遥测退出值，以及可选的启动器持有的包管理器和受管 Host 策略数据。`readProfilePatches()` 组合传入的启动 profile，或读取这些位置上的当前文件，并且总是重新读取 overlay 文件；调用方负责调度和应用结果。插件管理器的列表与 Config Editor 的写入无论是否启用 HMR 都调用它，因此会读到当前 overlay 内容，并在 overlay 文件缺失或无效时失败。
 - **进程内模块解析。** launcher 在挂载 profile 条目前，将 runtime resolution 安装到 Node 的 ESM 与 CommonJS 内部 resolver。exports、conditions、子路径、模块缓存和错误码仍由 Node 负责；路由后的 ESM 失败报告原始 importer。显式 CommonJS `paths` 始终保留原生查询，包括指向 profile 内的路径。
 - **链接目录。** profile 链接到树外目录时，其下的 importer 参与逐层 peer 查询，即使目标没有自身的 `package.json`。在每个 `D/node_modules` 位置，当前 `D/package.json` 的 peer 包名若存在于运行时表，就使用运行时包；其他包名查询物理候选。更近的物理包先于后续 peer 声明，peer 位置无需物理 `node_modules`。installation 作用域包目录不参与 linked 拦截，重叠 root 不改变 importer 的查询顺序（[规则](../../../.agents/notes/implemented/architecture/2026-09-19-profile-resolution-lookup-order.zh.md)）。
 - **包元数据。** `ctx.pluginPackages.packageOf` 定位所属包，不加载代码，也不要求导出 `package.json`；子路径选择其所属包，不校验该文件。安装 runtime resolution 后，即使查询未命中也以其选包规则为准。仅安装服务而不提供 runtime resolution 的底层嵌入方保留原生查询。展示元数据使用上文另述的入口感知读取器。

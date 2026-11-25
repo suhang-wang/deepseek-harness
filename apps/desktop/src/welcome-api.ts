@@ -3,6 +3,7 @@
 import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-account/types'
 import type { ProductEventMap } from '@deepseek-ai/dsh-client-product-analytics/types'
 import type { DesktopLocale } from './locale.ts'
+import type { EnterpriseIdentityState } from './enterprise-identity-state.ts'
 
 /** Private native welcome channels, installed only while its window exists. */
 export const WELCOME_IPC = {
@@ -16,6 +17,71 @@ export const WELCOME_IPC = {
   state: 'dsh-welcome:state',
   takeNotice: 'dsh-welcome:take-notice',
 } as const
+
+/** Separate channels; an enterprise preload never exposes the personal-account API. */
+export const ENTERPRISE_WELCOME_IPC = {
+  read: 'dsh-enterprise-welcome:read',
+  begin: 'dsh-enterprise-welcome:begin',
+  beginQr: 'dsh-enterprise-welcome:begin-qr',
+  finish: 'dsh-enterprise-welcome:finish',
+} as const
+
+/** Main-to-renderer enterprise welcome notifications. */
+export const ENTERPRISE_WELCOME_EVENT = {
+  confirmed: 'dsh-enterprise-welcome:confirmed',
+} as const
+
+/** Company selection channels installed only while the pre-Host picker exists. */
+export const COMPANY_PICKER_IPC = {
+  list: 'dsh-company-picker:list',
+  select: 'dsh-company-picker:select',
+  cancel: 'dsh-company-picker:cancel',
+} as const
+
+/** One signed company offered before a Host starts. */
+export interface CompanyPickerCompany {
+  readonly companyId: string
+  readonly displayName: string
+  readonly signedIn: boolean
+  readonly lastUsed: boolean
+}
+
+/** Operations available to the pre-Host company picker renderer. */
+export interface CompanyPickerApi extends DesktopLocale {
+  readonly productName: string
+  list(): Promise<readonly CompanyPickerCompany[]>
+  select(companyId: string): Promise<void>
+  cancel(): Promise<void>
+}
+
+/** Main-owned company picker operations. */
+export interface CompanyPickerOperations {
+  list(): Promise<readonly CompanyPickerCompany[]>
+}
+
+export type EnterpriseLoginResult = { readonly status: 'signed-in' | 'pending' | 'denied' | 'expired' }
+
+/** The native window receives only public identity state and an opaque attempt ID. */
+export interface EnterpriseWelcomeApi extends DesktopLocale {
+  readonly mode: 'enterprise'
+  /** Packaged product name shown by the welcome surface. */
+  readonly productName: string
+  read(): Promise<EnterpriseIdentityState>
+  beginLogin(): Promise<{ readonly attemptId: string }>
+  beginQrLogin(): Promise<{ readonly attemptId: string; readonly qrUrl: string }>
+  finishLogin(attemptId: string): Promise<EnterpriseLoginResult>
+  /** Notify that the QR flow reached its authorization callback and is being completed. */
+  onConfirmed(listener: () => void): () => void
+}
+
+/** Main-owned operations; onSignedIn transitions to the enterprise workspace. */
+export interface EnterpriseWelcomeOperations {
+  read(): Promise<EnterpriseIdentityState>
+  beginLogin(): Promise<{ readonly attemptId: string }>
+  beginQrLogin(): Promise<{ readonly attemptId: string; readonly qrUrl: string }>
+  finishLogin(attemptId: string): Promise<EnterpriseLoginResult>
+  onSignedIn(state: Extract<EnterpriseIdentityState, { readonly status: 'signed-in' }>): Promise<void> | void
+}
 
 /** Credential writes return a safe outcome without exposing Host diagnostics. */
 export type WelcomeSaveResult = { readonly ok: true } | { readonly ok: false }
@@ -55,6 +121,8 @@ export interface WelcomeOperations {
 
 /** The renderer receives localized copy, login operations, and safe account snapshots. */
 export type WelcomeApi = DesktopLocale & WelcomeOperations & {
+  /** Packaged product name shown by the welcome surface. */
+  readonly productName: string
   /** @param listener - safe account snapshot recipient. @returns subscription disposer. */
   onAccountState(listener: (state: AccountView) => void): () => void
 }

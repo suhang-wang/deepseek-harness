@@ -114,6 +114,28 @@ beforeEach(() => {
 })
 
 describe('PiAiAdapter provider routing', () => {
+  it.each([false, true])('replays OpenAI thinking only when the target supports it (%s)', async (reasoning) => {
+    const server = await mockServer([
+      { events: [JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: 'private trace' }, finish_reason: null }] }), ...textEvents] },
+      { events: textEvents },
+    ])
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, { providers: {
+      enterprise: { api: 'openai-completions', baseURL: server.url, apiKeyEnv: 'PI_TEST_KEY',
+        models: [{ id: 'qwen-local', reasoningEfforts: reasoning ? { off: null, high: 'high' } : false }] },
+    } })
+    const user = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+    const first = await assemble(ctx, { provider: 'enterprise', model: 'qwen-local', messages: [user] })
+    expect(JSON.stringify(first.message)).toContain('private trace')
+    await assemble(ctx, { provider: 'enterprise', model: 'qwen-local', messages: [user, first.message, user] })
+    const wire = JSON.stringify(server.requests[1])
+    if (reasoning) expect(wire).toContain('private trace')
+    else expect(wire).not.toContain('private trace')
+    expect(wire).toContain('hello')
+  })
+
   it('resolves a catalog model dynamically and uses a private endpoint', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url)
@@ -549,9 +571,9 @@ describe('PiAiAdapter provider routing', () => {
 })
 
 describe('provider profile lifecycle', () => {
-  it('keeps adapter helpers off the package root', () => {
+  it('exports the managed provider profile resolver but keeps conversion helpers internal', () => {
+    expect(LlmPiAi.resolveProfiles).toBe(resolveProfiles)
     for (const helper of [
-      'resolveProfiles',
       'toPiContext',
       'toPiReplayState',
       'toPiAssistant',

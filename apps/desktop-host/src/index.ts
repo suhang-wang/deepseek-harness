@@ -14,6 +14,7 @@ import { localDragResource } from './file-drag.ts'
 import { installDesktopUpdateTaskControl } from './update-tasks.ts'
 import { installDesktopQuitInspection } from './quit-inspection.ts'
 import { installPlatformSessionPublisher } from './platform-session.ts'
+import { readDesktopHostLaunchArguments } from './launch-arguments.ts'
 import { installOperationDiagnostics } from './operation-diagnostics.ts'
 import { DesktopAuthenticationEnd, receiveDesktopSecret } from './authentication.ts'
 import * as DesktopAuthentication from '@deepseek-ai/dsh-host-authentication-desktop'
@@ -38,10 +39,17 @@ async function main(): Promise<void> {
     if (process.connected) process.disconnect()
     return
   }
-  const runtimeDir = process.argv[2] as string
-  const projectDir = process.argv[3] as string
-  // Set before the launch-environment snapshot and profile evaluation; empty means the payload sits beside the runtime directory.
-  process.env.DSH_PRIMARY_RUNTIME = process.argv[4] || join(runtimeDir, '..', 'runtime', 'primary-runtime')
+  const launchArguments = process.argv.slice(2)
+  // Empty selects the payload beside the runtime directory; the strict parser still validates every path and policy.
+  if (launchArguments[2] === '' && launchArguments[0] !== undefined) {
+    launchArguments[2] = join(launchArguments[0], '..', 'runtime', 'primary-runtime')
+  }
+  const { runtimeDir, projectDir, primaryRuntime, packageManager, hostPluginAllowlist } = readDesktopHostLaunchArguments(launchArguments)
+  if (hostPluginAllowlist?.enterpriseServiceOrigin !== undefined) {
+    process.env.DSH_ENTERPRISE_SERVICE_ORIGIN = hostPluginAllowlist.enterpriseServiceOrigin
+  }
+  // Set before the launch-environment snapshot and profile evaluation.
+  process.env.DSH_PRIMARY_RUNTIME = primaryRuntime
   const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   const profile = loadProfileDirectory('dsh', projectDir, installAnchor)
   reportSkippedBundles('dsh', profile)
@@ -50,15 +58,22 @@ async function main(): Promise<void> {
     profile: 'desktop',
     resolvedProfile: { profile, installAnchor },
     patchFiles: [],
+    ...(hostPluginAllowlist === undefined ? {} : {
+      allowedHostPlugins: hostPluginAllowlist.plugins,
+      trustedHostPackages: hostPluginAllowlist.packages,
+      ...(hostPluginAllowlist.enterpriseServiceOrigin === undefined ? {} : {
+        enterpriseServiceOrigin: hostPluginAllowlist.enterpriseServiceOrigin,
+      }),
+    }),
     args: ['--no-open', '--host', '127.0.0.1', '--port', '0'],
-    ...(process.argv[5] === undefined ? {} : {
+    ...(packageManager === undefined ? {} : {
       packageManager: {
         command: process.execPath,
-        args: ['--expose-internals', process.argv[5]],
+        args: ['--expose-internals', packageManager.pnpm],
         env: {
           ELECTRON_RUN_AS_NODE: '1',
           DSH_DESKTOP_NODE_EXECUTABLE: process.execPath,
-          PATH: `${process.argv[6] ?? ''}${delimiter}${process.env.PATH ?? ''}`,
+          PATH: `${packageManager.nodeBin}${delimiter}${process.env.PATH ?? ''}`,
         },
       },
     }),

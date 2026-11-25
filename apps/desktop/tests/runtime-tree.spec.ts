@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { DESKTOP_HOST_PACKAGE, DESKTOP_HOST_RUNTIME_FILES } from '../src/core-package-set.ts'
 import { DESKTOP_RUNTIME_FILE, readDesktopRuntime, runtimePath, verifyDesktopRuntime, writeDesktopRuntime, writeDesktopRuntimeAsync } from '../src/runtime-tree.ts'
-import { runtimeFixture } from './runtime-fixture.ts'
+import { runtimeFixture, writePackage } from './runtime-fixture.ts'
 
 const roots: string[] = []
 function fixture(): string {
@@ -26,6 +26,38 @@ it('seals final file bytes identically with concurrent and synchronous inventory
   expect(await writeDesktopRuntimeAsync(dsh, original.release, names)).toEqual(expected)
   expect(readFileSync(join(dsh, DESKTOP_RUNTIME_FILE))).toEqual(expectedBytes)
   expect(await verifyDesktopRuntime(dsh, original.release.version)).toEqual(expected)
+})
+
+it('seals enterprise companies, plugin policy, and nested dependency catalogs with concurrent inventory', async () => {
+  const dsh = join(fixture(), 'dsh')
+  const original = readDesktopRuntime(dsh)
+  const bundle = '@dsh-enterprise/harness-bundle'
+  const identity = '@dsh-enterprise/harness-identity'
+  const modules = join(dsh, 'node_modules')
+  writePackage(modules, bundle, { dsh: { enterprise: { allowedHostPluginNames: [bundle, identity] } } })
+  const identityPath = writePackage(modules, identity)
+  writePackage(join(identityPath, 'node_modules'), 'nested-dependency')
+  const names = [...original.sharedPackages.map(entry => entry.name), bundle, identity]
+  const enterpriseCompanies = [
+    { companyId: 'company-1', displayName: 'Company one', serviceOrigin: 'https://one.example.test' },
+    { companyId: 'company-2', displayName: 'Company two', serviceOrigin: 'https://two.example.test' },
+  ]
+  const target = { platform: process.platform, arch: process.arch,
+    enterpriseServiceOrigin: 'https://one.example.test', enterpriseCompanies }
+  const expected = writeDesktopRuntime(dsh, original.release, names, target)
+  const expectedBytes = readFileSync(join(dsh, DESKTOP_RUNTIME_FILE))
+  expect(await writeDesktopRuntimeAsync(dsh, original.release, names, target)).toEqual(expected)
+  expect(readFileSync(join(dsh, DESKTOP_RUNTIME_FILE))).toEqual(expectedBytes)
+  expect(readDesktopRuntime(dsh).enterpriseCompanies).toEqual(enterpriseCompanies)
+  expect(expected.allowedHostPlugins?.map(entry => entry.name)).toEqual([bundle, identity])
+  expect(expected.trustedHostPackages).toContainEqual({
+    name: 'nested-dependency', version: '1.0.0', path: `node_modules/${identity}/node_modules/nested-dependency`,
+  })
+  expect(await verifyDesktopRuntime(dsh, original.release.version)).toEqual(expected)
+  await expect(writeDesktopRuntimeAsync(dsh, original.release, names, {
+    ...target, enterpriseServiceOrigin: 'https://two.example.test',
+  })).rejects.toThrow('must match the first signed company')
+  expect(readFileSync(join(dsh, DESKTOP_RUNTIME_FILE))).toEqual(expectedBytes)
 })
 
 it.each(['manifest', 'link'])('leaves the descriptor unchanged when concurrent sealing rejects a %s', async (failure) => {

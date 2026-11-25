@@ -149,6 +149,8 @@ Finish CLI commands before updating or uninstalling Desktop; the installer does 
 
 Electron owns `$DSH_HOME/profiles/desktop`. Its `dependencies` contains packages installed by pnpm; `dsh.profile.bundles` contains the built-in bundles followed by enabled plugins. The signed application supplies dsh, the private Desktop Host, and their production packages from `resources/app.asar/dsh`. Packaged applications select runtime profile resolution without creating package links; development profiles use filesystem links. Both host and plugins execute in the same Electron Node-mode process; Desktop does not enable `--preserve-symlinks`. The CLI cannot boot this profile. The Desktop-installed command can manage its plugins while the application is quit; npm-installed dsh cannot mutate it.
 
+The Host identity adapter sends `secure-store-request` messages over the private process IPC channel for `refresh`, `logout-capability`, `employee-id`, and a pending revocation queue. Electron atomically replaces or clears the active session separately from that queue, encrypts the record with `safeStorage`, and persists only ciphertext in the application user-data directory. On macOS, Keychain availability is required; the store has no plaintext fallback or renderer route. The Host sends validated HTTPS authorization URLs over a separate private IPC request; Electron opens them with the system browser. Both requests use a 10-second timeout and sanitized failures.
+
 The application preload exposes boot readiness, fatal startup reporting, native directory selection, the `__DSH_HOST_PATHS__` bridge for composer path references, and the lease-scoped Browser bridge only to `dsh-app://app` documents. The same preload forwards the main-process machine description from `dshDesktop.deviceInfo()` as `name=value` fields separated by `; `: `platform`, `os`, `app_arch` (the architecture the application binary runs as, which differs from the hardware architecture under emulation), `cpu`, and `memory_gib` (total physical memory in GiB with one decimal). A field is omitted when its source is unavailable. The description carries no hostname, user name, or serial number. Product documents use the shared authenticated HTTP APIs and receive the Desktop marker, update presentation, and an action that opens native confirmation; they cannot choose artifacts or authorize installation. Plugin management uses the Web application's authenticated HTTP APIs. Electron serves update-dialog documents and assets locally at `dsh-app://shell/`, independently of Host readiness. Electron exposes no plugin-management IPC or separate management document. No renderer receives filesystem access, raw Electron IPC, a shell, or arbitrary pnpm arguments.
 
 The file-drag bridge accepts arbitrary file bytes or Session-scoped resource references from the owned product main frame. The Host authorizes resource reads through its composed filesystem, confirms a local mapping, and returns a private content digest; main checks content and the shared export filename before borrowing the source. Native startup checks the prepared file’s device, inode, size, modification time, and change time without rereading its bytes. Borrowed files are never deleted. Renamed, transformed, remote, or Blob content uses a private temporary copy. MIME data completes names without restricting file types; compatible suffixes such as `.jpeg` survive. Temporary preparations, partial writes, and retained exports share 64 MiB; unused files release on pointer leave, and OS-delivered copies expire after 60 seconds. Exhaustion reports the generic retry message until capacity is reclaimed. Caller cancellation and shutdown abort Host reads and main-process verification, interrupt icon waits, and release unused files. Shutdown waits for writes/releases and retries failed removals without waiting for the icon service. Update preparation attempts cleanup before stopping the Host; cleanup failures are logged and do not block installation or shutdown. Failed installation restores the bridge. Asynchronous system file icons avoid decoding original images in main.
@@ -184,6 +186,8 @@ The [Web plugin UI](../../packages/client/ui-plugin-manager/README.md) owns the 
 Desktop fatal failures use native recovery with Exit, Restart, Disable third-party plugins, back up profile patch, and restart, and Get diagnostic report. See [recovery and diagnostics](docs/diagnostics/README.md) for triggers, report locations and contents, recent operation records, and shutdown limits.
 
 ### Host environment
+
+The private Host launch carries the primary-runtime path and an optional pnpm and Node-bin path pair. Managed enterprise launches also pass a private policy-file path containing the approved Host plugins, trusted runtime packages, and enterprise service origin, keeping the full catalog off the Windows command line. An absent package-manager pair leaves package operations unconfigured; the policy path is never interpreted as a pnpm path.
 
 macOS and Linux GUI launches inherit only the session manager's environment, without variables exported by shell startup files. Before the first Host starts, Desktop runs the account's login shell (from the user database, not `$SHELL`) once as `<shell> -ilc` and reads its `env -0` output between delimiters, so `~/.zprofile` and `~/.zshrc` (or the shell's equivalents) take effect for the Host, agent shells, terminals, and profile configuration. Reading runs in parallel with profile preparation. The probe has no terminal input and sets `DISABLE_AUTO_UPDATE=true`, `ZSH_TMUX_AUTOSTARTED=true`, and `ZSH_TMUX_AUTOSTART=false` to keep oh-my-zsh and tmux plugins from blocking. Shell values replace inherited values except `PWD`, `OLDPWD`, `SHLVL`, `_`, those probe variables, and launcher-owned `DSH_*` and `ELECTRON_*` names; Desktop resolves paths such as `DSH_HOME` before the read, so the Host keeps the same values. The read completes at the closing delimiter, so background processes started by startup files may keep running with their output discarded. A candidate that fails to start, exits nonzero, prints no delimited output, or exceeds `DSH_DESKTOP_LOGIN_SHELL_TIMEOUT_MS` (integer milliseconds from 1000 through 2147483647, default `10000`; its process group is killed) is logged as a warning, and Desktop tries `/bin/zsh`, `/bin/bash`, and `/bin/sh` in turn; when all fail the Host uses the inherited environment. The dump command uses POSIX syntax, so an account shell such as csh, tcsh, or nushell fails and the Host receives the environment from the first system shell's startup files instead. Quitting Desktop during the read kills the running probe's process group. The result is read once per application process, so changes to shell startup files apply after quitting and reopening Desktop. Windows GUI launches already inherit the user and system environment variables from the registry, so Windows skips this step.
 
@@ -236,12 +240,19 @@ The welcome window follows system appearance with the design’s Platform light/
 ## Package
 
 <a id="release-versions"></a>
+
 <a id="upload-updates"></a>
+
 <a id="windows-ev-signing"></a>
+
 <a id="desktop-runtime-preparation"></a>
+
 <a id="runtime-file-selection"></a>
+
 <a id="unsigned-windows-test-installer"></a>
+
 <a id="local-macos-dmg-without-release-signing"></a>
+
 <a id="local-official-bundles-from-a-loopback-registry"></a>
 
 Use the dedicated guides for build and release operations. Shared Windows runners have accepted credential and device isolation limits; read them before signing or executing branch code.
@@ -250,6 +261,12 @@ Use the dedicated guides for build and release operations. Shared Windows runner
 - [Windows signing and runner operations](windows-signing/README.md): machine setup, accepted isolation risks, signing credentials, token failures and cache maintenance.
 - [Desktop publication](publishing/README.md): upload credentials, release identity, fixed downloads, update feeds and upload recovery.
 - [Publisher workspace](../desktop-publisher/README.md): dependency ownership and isolated rollout installation.
+
+<a id="local-enterprise-package-preparation"></a>
+
+### Local enterprise package preparation
+
+For company profiles, dual-company installations, and managed runtimes, see [enterprise package preparation](packaging/README.md#local-enterprise-package-preparation).
 
 <a id="windows-uninstall-rules"></a>
 

@@ -1,0 +1,6 @@
+{
+  "appId": "com.example.harness.enterprise",
+  "productName": "Example Harness Enterprise",
+  "protocolScheme": "example-harness-enterprise",
+  "serviceOrigin": "https://auth.example.com"
+}

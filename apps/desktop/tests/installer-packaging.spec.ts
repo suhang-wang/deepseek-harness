@@ -6,7 +6,12 @@ import { AppInfo, Packager } from 'app-builder-lib'
 import { expandMacro } from 'app-builder-lib/out/util/macroExpander.js'
 import { describe, expect, it, vi } from 'vitest'
 
-const { execute, write } = vi.hoisted(() => ({ execute: vi.fn(async () => undefined), write: vi.fn(async () => undefined) }))
+const { execute, write, writeInclude } = vi.hoisted(() => ({
+  execute: vi.fn(async () => undefined), write: vi.fn(async () => undefined), writeInclude: vi.fn(),
+}))
+vi.mock('node:fs', async importOriginal => ({
+  ...await importOriginal<typeof import('node:fs')>(), mkdirSync: vi.fn(), writeFileSync: writeInclude,
+}))
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>()
   const { promisify } = await import('node:util')
@@ -18,6 +23,55 @@ vi.mock('node:fs/promises', async importOriginal => ({
 }))
 
 describe('installer preparation preserves application dependencies', () => {
+  it('uses the isolated enterprise target for builder output and runtime inputs', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const base = { DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_TARGET_PLATFORM: 'darwin',
+      DSH_DESKTOP_TARGET_ARCH: 'arm64', DSH_DESKTOP_UNSIGNED: '1' }
+    const official = createElectronBuilderConfig(base, 'darwin', 'arm64')
+    const enterprise = createElectronBuilderConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local', DSH_DESKTOP_ENTERPRISE_MODE: '1' }, 'darwin', 'arm64')
+    expect(enterprise.directories.output).toContain('/enterprise/targets/mac-arm64/unsigned-artifacts')
+    expect(enterprise).toMatchObject({ appId: 'com.deepseek.harness.enterprise.local', productName: 'DeepSeek Harness Enterprise',
+      artifactName: 'deepseek-harness-enterprise-${version}-${os}-${arch}-unsigned.${ext}',
+      protocols: [{ name: 'DeepSeek Harness Enterprise', schemes: ['dsh-enterprise'] }],
+      extraMetadata: { dshDesktopEdition: 'enterprise', dshDesktopAppId: 'com.deepseek.harness.enterprise.local' } })
+    expect(official.extraMetadata.dshDesktopEdition).toBe('official')
+    expect(() => createElectronBuilderConfig({ ...base, DSH_DESKTOP_ENTERPRISE_MODE: '1' }, 'darwin', 'arm64')).toThrow(/enterprise app ID/u)
+    expect(() => createElectronBuilderConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local' }, 'darwin', 'arm64')).toThrow(/provisional enterprise app ID/u)
+    expect(enterprise.files.some(entry => typeof entry !== 'string'
+      && entry.to === 'dsh' && entry.from.includes('/enterprise/targets/mac-arm64/dsh'))).toBe(true)
+    expect(official.directories.output).toContain('/targets/mac-arm64/unsigned-artifacts')
+    expect(official.directories.output).not.toContain('/enterprise/')
+  })
+  it('writes multilingual installer strings alongside the company-specific NSIS wrapper', async () => {
+    execute.mockClear()
+    write.mockClear()
+    writeInclude.mockClear()
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const config = createElectronBuilderConfig({
+      DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_UNSIGNED: '1', DSH_DESKTOP_APP_ID: 'com.example.company',
+      DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Company Harness', DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'company-harness',
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
+    }, 'win32', 'x64')
+    expect(config.productName).toBe('Company Harness')
+    expect(config.extraMetadata.name).toBe('dsh-enterprise-com.example.company')
+    expect(config.artifactName).toBe('deepseek-harness-enterprise-com.example.company-${version}-${os}-${arch}-unsigned.${ext}')
+    expect(config.nsis.include).toMatch(
+      /enterprise[\\/]companies[\\/]com\.example\.company[\\/]targets[\\/]win-x64[\\/]installer-include\.nsh$/u,
+    )
+    expect(writeInclude).toHaveBeenCalledWith(config.nsis.include,
+      expect.stringContaining('!define DSH_INSTALLER_NSH_DIR'), 'utf8')
+    expect(writeInclude.mock.calls[0]![1]).toContain('!define INSTALLER_BUILD_DIR')
+    expect(writeInclude.mock.calls[0]![1]).toContain('!include "')
+    await expect(config.beforeBuild()).resolves.toBe(true)
+    expect(write).toHaveBeenCalledWith(
+      expect.stringMatching(/com\.example\.company[\\/]targets[\\/]win-x64[\\/]installer-ui[\\/]strings\.nsh$/u),
+      expect.stringContaining('LangString INSTALLER_INSTALL ${LANG_JAPANESE}'), 'utf8',
+    )
+    expect(config.nsis.installerLanguages).toEqual(readInstallerLocales().map(locale => locale.id))
+    write.mockRejectedValueOnce(new Error('installer locale write failed'))
+    await expect(config.beforeBuild()).rejects.toThrow('installer locale write failed')
+  })
   it.each(['win32', 'darwin'] as const)('rejects a missing production policy before signing on %s', async (platform) => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer',

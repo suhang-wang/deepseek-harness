@@ -18,7 +18,9 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.hero.frame',
     id: 'pixel-whale',
   }, PixelWhale))
-  if (process.env.DSH_CLIENT_BUILD_PROFILE !== 'official') return
+  const title = process.env.DSH_CLIENT_TITLE
+  const companyBuild = title !== undefined && title.length > 0 && title !== 'DeepSeek Harness'
+  if (process.env.DSH_CLIENT_BUILD_PROFILE !== 'official' && !companyBuild) return
   ctx.slots.inject('sidebar.brand.mark', () =>
     ctx.slots.inject('sidebar.brand.name', function* () {
       yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)

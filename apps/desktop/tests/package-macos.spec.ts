@@ -14,6 +14,7 @@ import { desktopElectronBuilderArguments, resolveDesktopPackageTarget } from '..
 import { writeMacOSAppUpdateConfig } from '../scripts/macos-app-update-config.mjs'
 
 const environment = {
+  DSH_DESKTOP_APP_ID: 'com.example.desktop',
   DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)',
   DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234',
   APPLE_KEYCHAIN_PROFILE: 'fixture-profile',
@@ -26,18 +27,24 @@ function barrier() {
   return { promise, release }
 }
 
-async function fixture(arch: 'arm64' | 'x64' = 'arm64') {
+async function fixture(arch: 'arm64' | 'x64' = 'arm64', enterprise = false) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-parallel-notarization-'))
   const artifactsRoot = join(root, 'artifacts')
-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
+  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', enterprise ? 'Example Harness.app' : 'DeepSeek Harness.app')
   await mkdir(join(appPath, 'Contents', 'Resources'), { recursive: true })
   await writeFile(join(appPath, 'payload'), 'signed content')
   await writeMacOSAppUpdateConfig(join(appPath, 'Contents', 'Resources'), {
-    publicUrl: `https://desktop-updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`,
+    publicUrl: enterprise
+      ? `https://enterprise-updates.example.com/dsh-enterprise/org.example.harness/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`
+      : `https://desktop-updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`,
   }, 'deepseek-harness-updater')
   const version = '1.2.3-alpha.1'
-  const base = `deepseek-harness-${version}-mac-${arch}`
-  const request = { arch, artifactsRoot, version, environment }
+  const base = `deepseek-harness${enterprise ? '-enterprise-org.example.harness' : ''}-${version}-mac-${arch}`
+  const request = { arch, artifactsRoot, version, environment: enterprise ? {
+    ...environment, DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_DESKTOP_APP_ID: 'org.example.harness',
+    DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
+    DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com',
+  } : environment }
   const apple: MacOSArtifactOperations = {
     copyApp: async (source, destination) => {
       await cp(source, destination, { recursive: true, verbatimSymlinks: true })
@@ -64,6 +71,15 @@ async function fixture(arch: 'arm64' | 'x64' = 'arm64') {
 }
 
 describe('parallel macOS artifacts', () => {
+  it('uses the enterprise App path and enterprise artifact names for a signed enterprise build', async () => {
+    const f = await fixture('arm64', true)
+    try {
+      await packageMacOSArtifacts(f.request, f.build, f.apple)
+      expect(await readFile(join(f.request.artifactsRoot, `${f.base}.dmg`), 'utf8')).toContain('signed content')
+      expect(await readFile(join(f.request.artifactsRoot, `${f.base}.zip`), 'utf8')).toContain('signed content')
+      expect(await readFile(join(f.appPath, 'ticket'), 'utf8')).toBe('accepted')
+    } finally { await rm(f.root, { recursive: true, force: true }) }
+  })
   it.each(['arm64', 'x64'] as const)('overlaps notarization on isolated %s copies and promotes only completed payloads', async (arch) => {
     const f = await fixture(arch)
     const appStarted = barrier()

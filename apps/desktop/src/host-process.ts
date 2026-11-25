@@ -1,9 +1,13 @@
 /** Electron Node-mode child lifecycle for the shared Web application. */
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { DesktopParentAuthentication } from './parent-authentication.ts'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
+import type { ActiveDesktopSession, DesktopSessionSecretKey } from './keychain-session-store.ts'
+import { enterpriseIdentityStatesEqual, parseEnterpriseIdentityState, type EnterpriseIdentityState } from './enterprise-identity-state.ts'
+import { DesktopParentAuthentication } from './parent-authentication.ts'
 import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
 import { desktopNodeEnvironment } from './node-environment.ts'
 import { parsePluginOperationRecord, type PluginOperationRecord, type PluginOperationRunId } from '@deepseek-ai/dsh-plugin-manager/diagnostic'
@@ -26,26 +30,61 @@ interface PlatformSessionEvent {
   readonly session: PlatformSession | null
 }
 
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | {
-  readonly type: 'starting'
-  readonly runId: PluginOperationRunId
-} | { readonly type: 'shutdown-complete' } | {
-  readonly type: 'file-drag-resource'
+interface SecureStoreRequestEvent {
+  readonly type: 'secure-store-request'
   readonly requestId: number
-  readonly resource: { readonly path: string; readonly sha256: string; readonly size: number } | null
-  readonly error?: string
-} | {
-  readonly type: 'update-tasks'
-  readonly requestId: number
-  readonly active: boolean
-  readonly error?: string
-} | {
-  readonly type: 'quit-inspection'
-  readonly requestId: number
-  readonly activeTasks: boolean
-  readonly scheduledTasks: boolean
-  readonly error?: string
+  readonly operation: 'get' | 'set' | 'delete' | 'save-active-session' | 'rotate-refresh' | 'clear-active-session' | 'acknowledge-revocation' | 'queue-revocation'
+  readonly key?: DesktopSessionSecretKey
+  readonly value?: string
+  readonly session?: ActiveDesktopSession
+  readonly expectedRefreshToken?: string
+  readonly nextRefreshToken?: string
 }
+
+interface BrowserOpenRequestEvent {
+  readonly type: 'browser-open-request'
+  readonly requestId: number
+  readonly url: string
+}
+
+interface EnterpriseIdentityChangeEvent {
+  readonly type: 'enterprise-identity-change'
+  readonly state: EnterpriseIdentityState
+}
+
+/** Native session storage capability supplied by Electron safeStorage. */
+export interface DesktopHostSecureStore {
+  get(key: DesktopSessionSecretKey): Promise<string | null>
+  set(key: DesktopSessionSecretKey, value: string): Promise<void>
+  delete(key: DesktopSessionSecretKey): Promise<void>
+  saveActiveSession(session: ActiveDesktopSession): Promise<void>
+  rotateRefresh(expectedRefreshToken: string, nextRefreshToken: string): Promise<boolean>
+  clearActiveSession(): Promise<void>
+  acknowledgeRevocation(capability: string): Promise<void>
+  queueRevocation(capability: string): Promise<void>
+}
+
+type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | SecureStoreRequestEvent | BrowserOpenRequestEvent
+  | EnterpriseIdentityChangeEvent | {
+    readonly type: 'starting'
+    readonly runId: PluginOperationRunId
+  } | { readonly type: 'shutdown-complete' } | {
+    readonly type: 'file-drag-resource'
+    readonly requestId: number
+    readonly resource: { readonly path: string; readonly sha256: string; readonly size: number } | null
+    readonly error?: string
+  } | {
+    readonly type: 'update-tasks'
+    readonly requestId: number
+    readonly active: boolean
+    readonly error?: string
+  } | {
+    readonly type: 'quit-inspection'
+    readonly requestId: number
+    readonly activeTasks: boolean
+    readonly scheduledTasks: boolean
+    readonly error?: string
+  }
 
 /** Correlated answer to one shell control request. */
 type DesktopHostControlResponse = Extract<DesktopHostEvent, { readonly requestId: number }>
@@ -60,6 +99,18 @@ export interface DesktopQuitInspection {
 export const QUIT_INSPECTION_DEADLINE_MS = 2_000
 
 const MAX_HOST_DIAGNOSTIC_CHARS = 64 * 1024
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u
+// Mirrors the enterprise server's employee identifier contract.
+const EMPLOYEE_ID_PATTERN = /^[A-Za-z0-9_.@-]{1,128}$/u
+
+function isValidSecureStoreValue(key: DesktopSessionSecretKey, value: string): boolean {
+  if (key === 'employee-id') return EMPLOYEE_ID_PATTERN.test(value)
+  if (key === 'company-id') return COMPANY_ID_PATTERN.test(value)
+  if (key === 'revocation-queue') return false
+  return TOKEN_PATTERN.test(value)
+}
+
 const runIdSchema = z.uuid()
 
 function isOwnedHostUrl(value: unknown): value is string {
@@ -103,6 +154,37 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
           && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
       } catch { return false }
     }
+    case 'secure-store-request':
+      if (!Number.isSafeInteger(candidate.requestId) || Number(candidate.requestId) <= 0) return false
+      if (candidate.operation === 'get' || candidate.operation === 'delete') return ['refresh', 'logout-capability', 'employee-id', 'company-id', 'revocation-queue'].includes(String(candidate.key)) && candidate.value === undefined && candidate.session === undefined
+      if (candidate.operation === 'set') return ['refresh', 'logout-capability', 'employee-id', 'company-id'].includes(String(candidate.key))
+        && typeof candidate.value === 'string' && isValidSecureStoreValue(candidate.key as DesktopSessionSecretKey, candidate.value)
+        && candidate.session === undefined
+      if (candidate.operation === 'clear-active-session') return candidate.key === undefined && candidate.value === undefined && candidate.session === undefined
+      if (candidate.operation === 'acknowledge-revocation') return candidate.key === undefined && typeof candidate.value === 'string' && TOKEN_PATTERN.test(candidate.value) && candidate.session === undefined
+      if (candidate.operation === 'queue-revocation') return candidate.key === undefined && typeof candidate.value === 'string' && TOKEN_PATTERN.test(candidate.value) && candidate.session === undefined
+      if (candidate.operation === 'rotate-refresh') {
+        return Object.keys(candidate).every(key => ['type', 'requestId', 'operation', 'expectedRefreshToken', 'nextRefreshToken'].includes(key))
+          && typeof candidate.expectedRefreshToken === 'string' && TOKEN_PATTERN.test(candidate.expectedRefreshToken)
+          && typeof candidate.nextRefreshToken === 'string' && TOKEN_PATTERN.test(candidate.nextRefreshToken)
+      }
+      if (candidate.operation === 'save-active-session') {
+        if (candidate.key !== undefined || candidate.value !== undefined || typeof candidate.session !== 'object' || candidate.session === null) return false
+        const session = candidate.session as Record<string, unknown>
+        return Object.keys(session).length === 4 && typeof session.refreshToken === 'string' && TOKEN_PATTERN.test(session.refreshToken)
+          && typeof session.logoutCapability === 'string' && TOKEN_PATTERN.test(session.logoutCapability)
+          && typeof session.employeeId === 'string' && EMPLOYEE_ID_PATTERN.test(session.employeeId)
+          && typeof session.companyId === 'string' && COMPANY_ID_PATTERN.test(session.companyId)
+      }
+      return false
+    case 'enterprise-identity-change':
+      return parseEnterpriseIdentityState(candidate.state) !== null
+    case 'browser-open-request':
+      if (!Number.isSafeInteger(candidate.requestId) || Number(candidate.requestId) <= 0 || typeof candidate.url !== 'string' || candidate.url.length > 2048) return false
+      try {
+        const url = new URL(candidate.url)
+        return url.protocol === 'https:' && !url.username && !url.password
+      } catch { return false }
     case 'fatal':
       return typeof candidate.message === 'string' && (candidate.diagnostic === undefined || typeof candidate.diagnostic === 'string')
     case 'update-tasks':
@@ -174,6 +256,7 @@ export class DesktopHostProcess {
   readonly #authentication = new DesktopParentAuthentication()
   private runId: PluginOperationRunId | undefined
   private child: ChildProcess | undefined
+  private allowlistDir: string | undefined
   private readyResolve!: (ready: DesktopHostReady) => void
   private readyReject!: (error: Error) => void
   private readonly readyPromise = new Promise<DesktopHostReady>((resolve, reject) => {
@@ -182,10 +265,15 @@ export class DesktopHostProcess {
   })
   private exitPromise: Promise<void> | undefined
   private stderr = ''
+  /** Bounded child stderr for private diagnostics; callers must redact credentials before publishing. */
+  get diagnostic(): string { return this.stderr }
   private failureReported = false
   private stopping = false
   private shutdownCompleted = false
   private nextControlId = 1
+  private enterpriseIdentityDeliveryReady = false
+  private pendingEnterpriseIdentity: EnterpriseIdentityState | undefined
+  private deliveredEnterpriseIdentity: EnterpriseIdentityState | undefined
   private readonly controlRequests = new Map<number, {
     resolve: (response: DesktopHostControlResponse) => void
     reject: (error: Error) => void
@@ -201,6 +289,12 @@ export class DesktopHostProcess {
    * @param primaryRuntime - Optional bundled dependency payload; the Host exposes it to its profile as `DSH_PRIMARY_RUNTIME`.
    * @param packageManager - Bundled pnpm entry and Node launcher directory, scoped to package operations.
    * @param onPlatformSession - Private credential updates for embedded Platform views.
+   * @param secureStore - Native credential storage, available only to an approved enterprise identity Host.
+   * @param openExternal - Native HTTPS browser opener, available only to an approved enterprise identity Host.
+   * @param allowedHostPlugins - Signed plugin policy; absent for unrestricted non-enterprise launches.
+   * @param trustedHostPackages - Signed dependency catalog accompanying the plugin policy.
+   * @param onEnterpriseIdentity - Per-Host identity updates, buffered until explicitly enabled.
+   * @param enterpriseServiceOrigin - Release-approved service origin overriding inherited environment configuration.
    * @param onPluginOperation - Optional diagnostic sink; malformed records are ignored without failing the Host.
    */
   constructor(
@@ -214,8 +308,23 @@ export class DesktopHostProcess {
     private readonly packageManager?: { readonly pnpm: string; readonly nodeBin: string },
 
     private readonly onPlatformSession?: (session: PlatformSession | null) => void,
+    private readonly secureStore?: DesktopHostSecureStore,
+    private readonly openExternal?: (url: string) => Promise<void>,
+    private readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+    private readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[],
+    private readonly onEnterpriseIdentity?: (state: EnterpriseIdentityState) => void,
+    private readonly enterpriseServiceOrigin?: string,
     private readonly onPluginOperation?: (record: PluginOperationRecord) => void,
   ) {}
+
+  /** Enables enterprise identity delivery after the native wrapper has finished its own startup bookkeeping. */
+  flushPendingEnterpriseIdentity(): void {
+    if (this.enterpriseIdentityDeliveryReady) return
+    this.enterpriseIdentityDeliveryReady = true
+    const state = this.pendingEnterpriseIdentity
+    this.pendingEnterpriseIdentity = undefined
+    if (state !== undefined) this.deliverEnterpriseIdentity(state)
+  }
 
   /**
    * Start this child once and await its Web application URL.
@@ -224,20 +333,29 @@ export class DesktopHostProcess {
   async start(): Promise<DesktopHostReady> {
     if (this.child !== undefined) return this.readyPromise
     const entry = join(this.runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'index.js')
-    const child = spawn(this.node, [
-      '--expose-internals',
-      ...(this.inspectPort === undefined ? [] : [`--inspect=127.0.0.1:${String(this.inspectPort)}`]),
-      entry,
-      this.runtimeDir,
-      this.projectDir,
-      // Empty asks the Host for the payload beside its runtime directory, so that layout has one owner.
-      this.primaryRuntime ?? '',
-      ...this.packageManager === undefined ? [] : [this.packageManager.pnpm, this.packageManager.nodeBin],
-    ], {
-      cwd: this.projectDir,
-      env: desktopNodeEnvironment(this.node, undefined, this.environment),
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    })
+    const allowlistFile = this.writeAllowlistFile()
+    let child: ChildProcess
+    try {
+      child = spawn(this.node, [
+        '--expose-internals',
+        ...(this.inspectPort === undefined ? [] : [`--inspect=127.0.0.1:${String(this.inspectPort)}`]),
+        entry,
+        this.runtimeDir,
+        this.projectDir,
+        // Empty asks the Host for the payload beside its runtime directory, so that layout has one owner.
+        this.primaryRuntime ?? '',
+        ...this.packageManager === undefined ? [] : [this.packageManager.pnpm, this.packageManager.nodeBin],
+        ...(allowlistFile === undefined ? [] : [`--dsh-host-plugin-allowlist-file=${allowlistFile}`]),
+      ], {
+        cwd: this.projectDir,
+        env: desktopNodeEnvironment(this.node, undefined, this.enterpriseServiceOrigin === undefined ? this.environment
+          : { ...this.environment, DSH_ENTERPRISE_SERVICE_ORIGIN: this.enterpriseServiceOrigin }),
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      })
+    } catch (error) {
+      this.cleanupAllowlistFile()
+      throw error
+    }
     this.child = child
     child.stderr?.setEncoding('utf8')
     child.stderr?.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-MAX_HOST_DIAGNOSTIC_CHARS) })
@@ -278,6 +396,14 @@ export class DesktopHostProcess {
         })
       }
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
+      else if (message.type === 'secure-store-request') void this.answerSecureStoreRequest(message)
+      else if (message.type === 'browser-open-request') void this.answerBrowserOpenRequest(message)
+      else if (message.type === 'enterprise-identity-change') {
+        if (!this.acceptEnterpriseIdentityChange(message.state)) {
+          this.fail(new Error('dsh desktop host sent an invalid IPC event'))
+          child.kill('SIGTERM')
+        }
+      }
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))
@@ -299,6 +425,38 @@ export class DesktopHostProcess {
       })
     })
     return this.readyPromise
+  }
+
+  /**
+   * Write the sealed Host policy to a private launch file. Windows caps a
+   * spawned command line at 32,767 characters, and the packaged enterprise
+   * allowlist is far larger.
+   * @returns the launch file path, or undefined when this launch has no policy.
+   */
+  private writeAllowlistFile(): string | undefined {
+    if (this.allowedHostPlugins === undefined) return undefined
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-host-allowlist-'))
+    const file = join(directory, 'allowlist.json')
+    try {
+      writeFileSync(file, JSON.stringify({
+        plugins: this.allowedHostPlugins, packages: this.trustedHostPackages,
+        ...(this.enterpriseServiceOrigin === undefined ? {} : { enterpriseServiceOrigin: this.enterpriseServiceOrigin }),
+      }), { mode: 0o600 })
+    } catch (error) {
+      rmSync(directory, { recursive: true, force: true })
+      throw error
+    }
+    this.allowlistDir = directory
+    return file
+  }
+
+  /** Remove the launch file once the Host has read it or can no longer start. */
+  private cleanupAllowlistFile(): void {
+    const directory = this.allowlistDir
+    if (directory === undefined) return
+    this.allowlistDir = undefined
+    try { rmSync(directory, { recursive: true, force: true }) }
+    catch { /* a stale private launch file does not affect the sealed policy */ }
   }
 
   /**
@@ -392,13 +550,43 @@ export class DesktopHostProcess {
       }
     }
     this.child = undefined
+    this.cleanupAllowlistFile()
     if (requireGraceful && (!graceful || child.exitCode !== 0 || !this.shutdownCompleted)) {
       // This diagnostic reaches expandable UI; arbitrary plugin stderr can contain credentials.
       throw new DesktopHostUncleanExitError(`desktop update: Host did not complete graceful task teardown (exit ${String(child.exitCode)}, signal ${String(child.signalCode)}, shutdown acknowledged ${String(this.shutdownCompleted)}, graceful deadline exceeded ${String(!graceful)})`)
     }
   }
 
+  private acceptEnterpriseIdentityChange(state: EnterpriseIdentityState): boolean {
+    if (!this.hasApprovedEnterpriseIdentityPackage()) return false
+    if (this.stopping || this.failureReported) return true
+    const current = this.enterpriseIdentityDeliveryReady ? this.deliveredEnterpriseIdentity : this.pendingEnterpriseIdentity
+    if (current !== undefined) {
+      if (state.generation < current.generation) return true
+      if (state.generation === current.generation && enterpriseIdentityStatesEqual(state, current)) return true
+    }
+    if (this.enterpriseIdentityDeliveryReady) this.deliverEnterpriseIdentity(state)
+    else this.pendingEnterpriseIdentity = state
+    return true
+  }
+
+  private hasApprovedEnterpriseIdentityPackage(): boolean {
+    if (this.allowedHostPlugins === undefined) return false
+    return this.allowedHostPlugins.some(plugin => plugin.name === '@dsh-enterprise/harness-identity')
+  }
+
+  private deliverEnterpriseIdentity(state: EnterpriseIdentityState): void {
+    if (this.stopping || this.failureReported) return
+    this.deliveredEnterpriseIdentity = state
+    try {
+      this.onEnterpriseIdentity?.(state)
+    } catch {
+      this.fail(new Error('dsh desktop host enterprise identity listener failed'))
+    }
+  }
+
   private fail(error: Error): void {
+    this.cleanupAllowlistFile()
     if (this.runId !== undefined) Object.assign(error, { hostRunId: this.runId })
     this.onPlatformSession?.(null)
     this.readyReject(error)
@@ -410,5 +598,71 @@ export class DesktopHostProcess {
         console.error('desktop host failure listener failed', listenerError)
       }
     }
+  }
+
+  private async answerSecureStoreRequest(request: SecureStoreRequestEvent): Promise<void> {
+    const child = this.child
+    let response: { readonly type: 'secure-store-response'; readonly requestId: number; readonly success: boolean; readonly value?: string | null | boolean } = {
+      type: 'secure-store-response', requestId: request.requestId, success: false,
+    }
+    if (this.secureStore !== undefined && this.hasApprovedEnterpriseIdentityPackage() && !this.stopping && !this.failureReported) {
+      try {
+        if (request.operation === 'get' && request.key !== undefined) response = {
+          type: 'secure-store-response', requestId: request.requestId, success: true,
+          value: await this.secureStore.get(request.key),
+        }
+        else if (request.operation === 'set' && request.key !== undefined) {
+          if (request.value === undefined) throw new Error('Invalid secure-store request')
+          await this.secureStore.set(request.key, request.value)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'delete' && request.key !== undefined) {
+          await this.secureStore.delete(request.key)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'save-active-session' && request.session !== undefined) {
+          await this.secureStore.saveActiveSession(request.session)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'rotate-refresh' && request.expectedRefreshToken !== undefined && request.nextRefreshToken !== undefined) {
+          response = {
+            type: 'secure-store-response', requestId: request.requestId, success: true,
+            value: await this.secureStore.rotateRefresh(request.expectedRefreshToken, request.nextRefreshToken),
+          }
+        }
+        else if (request.operation === 'clear-active-session') {
+          await this.secureStore.clearActiveSession()
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'acknowledge-revocation' && request.value !== undefined) {
+          await this.secureStore.acknowledgeRevocation(request.value)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+        else if (request.operation === 'queue-revocation' && request.value !== undefined) {
+          await this.secureStore.queueRevocation(request.value)
+          response = { type: 'secure-store-response', requestId: request.requestId, success: true }
+        }
+      } catch {
+        response = { type: 'secure-store-response', requestId: request.requestId, success: false }
+      }
+    }
+    if (child?.connected) {
+      const finalResponse = this.stopping || this.failureReported
+        ? { type: 'secure-store-response' as const, requestId: request.requestId, success: false }
+        : response
+      child.send(finalResponse, (error) => { if (error !== null) this.fail(new Error('dsh desktop host secure storage IPC failed')) })
+    }
+  }
+
+  private async answerBrowserOpenRequest(request: BrowserOpenRequestEvent): Promise<void> {
+    const child = this.child
+    let success = false
+    if (this.openExternal !== undefined && this.hasApprovedEnterpriseIdentityPackage() && !this.stopping && !this.failureReported) {
+      try { await this.openExternal(request.url); success = true } catch { success = false }
+    }
+    if (child?.connected) child.send({
+      type: 'browser-open-response', requestId: request.requestId,
+      success: success && !this.stopping && !this.failureReported,
+    }, (error) => { if (error !== null) this.fail(new Error('dsh desktop host browser IPC failed')) })
   }
 }

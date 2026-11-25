@@ -8,17 +8,28 @@ const preferencesSchema = z.object({
   allowTestAuthPopupWindow: z.boolean(),
   channel: z.enum(['nightly', 'stable']),
 })
-const documentSchema = z.looseObject({ updates: z.looseObject({}).optional() })
+const enterpriseSchema = z.object({
+  activeCompanyId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/u).nullable(),
+})
+const documentSchema = z.looseObject({ updates: z.looseObject({}).optional(), enterprise: z.looseObject({}).optional() })
 
 /** Known field values before consumers supply defaults for absent fields. */
 export type DesktopUpdatePreferences = z.infer<typeof preferencesSchema>
-/** Unknown root and updates fields survive a read-modify-write operation. */
+/** Persisted enterprise selection before consumers supply a default. */
+export type DesktopEnterprisePreferences = z.infer<typeof enterpriseSchema>
+type DesktopPreferences = DesktopUpdatePreferences & DesktopEnterprisePreferences
+/** Known settings patches; omitted sections and fields remain unchanged. */
+export interface DesktopSettingsPatch {
+  updates?: Partial<DesktopUpdatePreferences>
+  enterprise?: Partial<DesktopEnterprisePreferences>
+}
+/** Unknown root, updates, and enterprise fields survive a read-modify-write operation. */
 export type DesktopSettingsDocument = z.infer<typeof documentSchema>
 /** Handling-relevant failure details; validation failures never include document contents. */
 export type DesktopSettingsProblem =
   | { kind: 'read' }
   | { kind: 'invalid'; reason: 'json' | 'structure' }
-  | { kind: 'invalid'; reason: 'field'; field: keyof DesktopUpdatePreferences }
+  | { kind: 'invalid'; reason: 'field'; field: keyof DesktopPreferences }
   | { kind: 'write'; operation: 'initialize' | 'save'; effect: 'unchanged' | 'unknown' | 'written' }
 
 /** A storage or validation failure; business consumers decide fallback or suspension. */
@@ -46,10 +57,10 @@ export type DesktopSettingsRead =
   | {
     kind: 'ready'
     document: DesktopSettingsDocument
-    fields: { [K in keyof DesktopUpdatePreferences]: DesktopSettingsField<DesktopUpdatePreferences[K]> }
+    fields: { [K in keyof DesktopPreferences]: DesktopSettingsField<DesktopPreferences[K]> }
   }
 
-function field<T>(schema: z.ZodType<T>, value: unknown, name: keyof DesktopUpdatePreferences, path: string): DesktopSettingsField<T> {
+function field<T>(schema: z.ZodType<T>, value: unknown, name: keyof DesktopPreferences, path: string): DesktopSettingsField<T> {
   if (value === undefined) return { kind: 'absent' }
   const result = schema.safeParse(value)
   return result.success ? { kind: 'valid', value: result.data }
@@ -104,6 +115,7 @@ export class DesktopSettingsFile {
       allowTestAuthPopupWindow: field(preferencesSchema.shape.allowTestAuthPopupWindow,
         document.updates?.allowTestAuthPopupWindow, 'allowTestAuthPopupWindow', this.path),
       channel: field(preferencesSchema.shape.channel, document.updates?.channel, 'channel', this.path),
+      activeCompanyId: field(enterpriseSchema.shape.activeCompanyId, document.enterprise?.activeCompanyId, 'activeCompanyId', this.path),
     } }
   }
 
@@ -121,19 +133,28 @@ export class DesktopSettingsFile {
   }
 
   /**
-   * Patch known fields under the shared writer lock, preserving unknown and unrelated invalid fields.
-   * Malformed JSON/structure is rejected; a missing document starts empty. External editors must
-   * not write concurrently. No runtime settings change here. Write errors distinguish unchanged,
-   * uncertain write completion, and a committed write whose lock cleanup failed; no rollback is attempted.
+   * Patch update preferences using the shared document writer.
    * @param updates - Typed fields to replace; omitted keys remain unchanged.
    * @returns After atomic replacement and lock release; otherwise throws DesktopSettingsFileError.
    */
   async saveUpdates(updates: Partial<DesktopUpdatePreferences>): Promise<void> {
-    const result = await this.mutate({ kind: 'save', updates })
+    await this.save({ updates })
+  }
+
+  /**
+   * Patch known fields under the shared writer lock, preserving unknown and unrelated invalid fields.
+   * Malformed JSON/structure is rejected; a missing document starts empty. External editors must
+   * not write concurrently. No runtime settings change here. Write errors distinguish unchanged,
+   * uncertain write completion, and a committed write whose lock cleanup failed; no rollback is attempted.
+   * @param settings - Typed fields to replace; omitted sections and keys remain unchanged.
+   * @returns After atomic replacement and lock release; otherwise throws DesktopSettingsFileError.
+   */
+  async save(settings: DesktopSettingsPatch): Promise<void> {
+    const result = await this.mutate({ kind: 'save', settings })
     if (result.kind === 'error') throw result.error
   }
 
-  private async mutate(request: { kind: 'initialize' } | { kind: 'save'; updates: Partial<DesktopUpdatePreferences> }): Promise<DesktopSettingsRead> {
+  private async mutate(request: { kind: 'initialize' } | { kind: 'save'; settings: DesktopSettingsPatch }): Promise<DesktopSettingsRead> {
     let effect: 'unchanged' | 'unknown' | 'written' = 'unchanged'
     try {
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
@@ -142,8 +163,11 @@ export class DesktopSettingsFile {
         if (current.kind === 'error') throw current.error
         if (request.kind === 'initialize' && current.kind !== 'missing') return current
         const document = current.kind === 'ready' ? current.document : {}
-        const updates = request.kind === 'initialize' ? { allowTestAuthPopupWindow: false } : request.updates
-        const next = { ...document, updates: { ...document.updates, ...updates } }
+        const patch: DesktopSettingsPatch = request.kind === 'initialize' ? { updates: { allowTestAuthPopupWindow: false } } : request.settings
+        const next = { ...document,
+          ...(patch.updates === undefined ? {} : { updates: { ...document.updates, ...patch.updates } }),
+          ...(patch.enterprise === undefined ? {} : { enterprise: { ...document.enterprise, ...patch.enterprise } }),
+        }
         const raw = `${JSON.stringify(next, null, 2)}\n`
         effect = 'unknown'
         if (request.kind === 'initialize') {

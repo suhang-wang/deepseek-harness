@@ -149,6 +149,8 @@ Welcome 加载共享 Toast 的配色和阴影变量，挂载在 body 下的通�
 
 Electron 拥有 `$DSH_HOME/profiles/desktop`。其 `dependencies` 包含 pnpm 安装的包；`dsh.profile.bundles` 包含内置 bundle，后接已启用插件。签名应用从 `resources/app.asar/dsh` 提供 dsh、私有 Desktop Host 及其生产依赖。打包应用选择 runtime profile 解析，不创建包链接；开发 profile 使用文件系统链接。宿主与插件在同一个 Electron Node 模式进程中执行；Desktop 不启用 `--preserve-symlinks`。CLI 不能启动此 profile。Desktop 内置命令可在应用退出后管理其插件；npm 安装的 dsh 不能修改它。
 
+Host identity adapter 通过私有进程 IPC channel 发送 `secure-store-request` 消息，读写 `refresh`、`logout-capability`、`employee-id` 和待撤销队列。Electron 将活动会话的替换或清理与待撤销队列分开原子提交，使用 `safeStorage` 加密记录，并仅在应用 user-data 目录持久化密文。在 macOS 上，该存储要求 Keychain 可用；不会回退到明文，也不会向 renderer 暴露存储接口。Host 通过独立私有 IPC 发送经过校验的 HTTPS 授权地址，由 Electron 调用系统浏览器打开。两类请求都使用 10 秒超时，错误信息会脱敏。
+
 应用 preload 只向 `dsh-app://app` 文档暴露启动就绪、致命启动失败上报、原生目录选择、用于 composer 路径引用的 `__DSH_HOST_PATHS__` 桥接和租约范围内的 Browser 桥接。同一个 preload 通过 `dshDesktop.deviceInfo()` 转发主进程采集的机器描述，按 `name=value` 字段以 `; ` 分隔：`platform`、`os`、`app_arch`（应用二进制实际运行的架构，模拟运行时与硬件架构不同）、`cpu` 和 `memory_gib`（物理内存总量，GiB，保留一位小数）。取值不可用时省略对应字段。该描述不包含主机名、用户名或序列号。产品页面还获得 Desktop 标记、更新展示数据和打开原生确认的操作，不能选择安装产物或授权安装。插件管理使用 Web 应用经过认证的 HTTP API；Electron 在 `dsh-app://shell/` 本地提供更新弹窗文档和资源，不依赖 Host 就绪。Electron 不提供插件管理 IPC 或独立管理页面。任何渲染进程都不会获得文件系统访问、原始 Electron IPC、shell 或任意 pnpm 参数。
 
 文件拖放桥接接受所属主应用主框架传入的任意文件字节或 Session 资源地址。Host 通过组合的文件系统授权读取、确认本地映射并返回私有内容摘要；主进程检查内容与统一解析的导出名后借用源文件。原生起拖核对准备时的设备、inode、大小、修改时间和变更时间，不再读取整份字节。借用文件不会被删除。改名、转换、远程或 Blob 内容使用私有临时副本。MIME 数据补全名称，不限制文件类型；`.jpeg` 等兼容后缀保持不变。临时准备、部分写入及保留的导出共享 64 MiB；指针移开释放未使用文件，已交给系统的副本在 60 秒后过期。空间耗尽时显示通用重试提示，容量回收后可重试。调用方取消及退出会中止 Host 读取和主进程验证、打断图标等待并释放未使用文件。退出等待写入和释放，重试失败的删除，但不等待图标服务。更新准备在停止 Host 前尝试清理；清理失败只记录日志，不阻断安装或退出。安装失败后恢复桥接。异步系统文件图标避免主进程解码原图。
@@ -184,6 +186,8 @@ macOS 上自定义菜单保留 Electron 的标准 Window 菜单及应用隐藏�
 Desktop 的致命故障通过原生恢复对话框提供退出、重启、禁用第三方插件并备份 profile patch 后重启，以及获取诊断报告。触发范围、报告位置与内容、近期操作记录和退出限制见[故障恢复与诊断](docs/diagnostics/README.zh.md)。
 
 ### Host 环境
+
+私有 Host 启动参数传入 primary-runtime 路径，以及可选的 pnpm 与 Node-bin 路径对。受管企业启动还传入私有策略文件路径，文件包含获准 Host 插件、可信运行时包及企业服务地址，避免将完整目录放入 Windows 命令行。未提供包管理器路径对时，包操作不配置专用运行器；策略路径不会被当作 pnpm 路径。
 
 macOS 和 Linux 从图形界面启动的程序只继承会话管理器提供的环境，不包含 shell 启动文件导出的变量。第一个 Host 启动之前，Desktop 以 `<shell> -ilc` 运行一次账户的登录 shell（取自用户数据库，不看 `$SHELL`），读取定界符之间的 `env -0` 输出，使 `~/.zprofile` 和 `~/.zshrc`（或该 shell 的对应文件）对 Host、agent shell、终端和 profile 配置生效。读取与 profile 准备并行进行。读取进程没有终端输入，并设置 `DISABLE_AUTO_UPDATE=true`、`ZSH_TMUX_AUTOSTARTED=true` 和 `ZSH_TMUX_AUTOSTART=false`，避免 oh-my-zsh 和 tmux 插件阻塞。shell 的值覆盖继承的值，但 `PWD`、`OLDPWD`、`SHLVL`、`_`、上述读取变量以及启动方自有的 `DSH_*` 和 `ELECTRON_*` 除外；Desktop 在读取之前已按 `DSH_HOME` 等变量解析路径，因此 Host 保持相同的值。读取在结束定界符出现时完成，因此启动文件启动的后台进程可以继续运行，其输出被丢弃。候选 shell 无法启动、以非零状态退出、没有输出定界内容或超过 `DSH_DESKTOP_LOGIN_SHELL_TIMEOUT_MS`（1000 到 2147483647 的整数毫秒，默认 `10000`；超时会结束其进程组）时，Desktop 记录一条警告，并依次尝试 `/bin/zsh`、`/bin/bash` 和 `/bin/sh`；全部失败时 Host 使用继承的环境。读取命令使用 POSIX 语法，因此 csh、tcsh 或 nushell 等账户 shell 会失败，Host 改为获得第一个系统 shell 的启动文件所设置的环境。读取期间退出 Desktop 会结束正在运行的读取进程组。每个应用进程只读取一次，因此修改 shell 启动文件后需要退出并重新打开 Desktop。Windows 从图形界面启动的程序已经从注册表继承用户和系统环境变量，因此 Windows 跳过这一步。
 
@@ -236,12 +240,19 @@ Desktop 在 Host 启动后、打开工作区前检查模型 API Key 引用是否
 ## 打包
 
 <a id="release-versions"></a>
+
 <a id="upload-updates"></a>
+
 <a id="windows-ev-signing"></a>
+
 <a id="desktop-runtime-preparation"></a>
+
 <a id="runtime-file-selection"></a>
+
 <a id="unsigned-windows-test-installer"></a>
+
 <a id="local-macos-dmg-without-release-signing"></a>
+
 <a id="local-official-bundles-from-a-loopback-registry"></a>
 
 构建与发布操作请使用独立指南。共享 Windows runner 存在已接受的凭据和设备隔离限制；签名或执行分支代码前必须阅读。
@@ -250,6 +261,12 @@ Desktop 在 Host 启动后、打开工作区前检查模型 API Key 引用是否
 - [Windows 签名与 runner 运维](windows-signing/README.zh.md)：机器部署、已接受的隔离风险、签名凭据、Token 失败与缓存维护。
 - [Desktop 发布](publishing/README.zh.md)：上传凭据、发布标识、固定下载、更新清单和上传恢复。
 - [发布工具 workspace](../desktop-publisher/README.zh.md)：依赖归属与放量隔离安装。
+
+<a id="local-enterprise-package-preparation"></a>
+
+### 本地企业组合包准备
+
+公司配置、双公司安装与受管运行时见[企业组合包准备](packaging/README.zh.md#local-enterprise-package-preparation)。
 
 <a id="windows-uninstall-rules"></a>
 

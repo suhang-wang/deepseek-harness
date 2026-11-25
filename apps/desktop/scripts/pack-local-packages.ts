@@ -18,7 +18,10 @@ async function main(): Promise<void> {
   if (values.out === undefined) throw new Error('desktop local pack: --out must name the package staging directory')
   const concurrency = parsePackConcurrency(values.concurrency)
   const root = process.cwd()
-  const environment = resolveClientBuildEnvironment(repositoryClientBuildEnvironment(root), 'local')
+  const environment = resolveClientBuildEnvironment({
+    ...process.env,
+    ...repositoryClientBuildEnvironment(root, process.env),
+  }, 'local')
   readClientBuildRecord(root, environment)
   const destination = resolve(root, values.out)
   const packed = await packFamilyMembers(root, releaseFamily('dsh'), destination, concurrency)

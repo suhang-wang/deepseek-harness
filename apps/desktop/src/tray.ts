@@ -10,6 +10,8 @@ export interface DesktopTrayOptions {
   readonly locale: () => DesktopLocale
   /** Show and focus the primary window. */
   readonly open: () => void
+  /** Open the signed company picker; absent on single-company packages. */
+  readonly switchCompany?: () => void
   /** Request quit through the same confirmation as every other quit entry. */
   readonly quit: () => void
 }
@@ -30,10 +32,15 @@ export class DesktopTray {
   relabel(): void {
     const tray = this.tray
     if (tray === undefined) return
-    const { messages } = this.options.locale()
+    const locale = this.options.locale()
+    const { messages } = locale
     tray.setToolTip(messages.aboutProduct)
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: messages.openApplication, click: () => { this.options.open() } },
+      ...this.options.switchCompany === undefined ? [] : [
+        { label: locale.id === 'zh-CN' ? '切换公司…' : 'Switch company…',
+          click: () => { this.options.switchCompany?.() } },
+      ],
       { type: 'separator' },
       { label: messages.quitApplication, click: () => { this.options.quit() } },
     ]))

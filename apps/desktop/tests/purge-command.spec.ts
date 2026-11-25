@@ -37,7 +37,7 @@ it('forwards the documented pnpm purge command through both package scripts to t
   await copyFile(join(root, 'apps/desktop-publisher/src/desktop-auto-update-environment.mjs'), join(publisher, 'desktop-auto-update-environment.mjs'))
   await writeFile(join(publisher, 'desktop-cos.ts'), "export const createDesktopCos = () => { throw new Error('unexpected COS') }")
   await copyFile(join(root, 'apps/desktop/scripts/upload-target.ts'), join(scripts, 'upload-target.ts'))
-  for (const filename of ['desktop-build-paths.mjs']) {
+  for (const filename of ['desktop-build-paths.mjs', 'desktop-release-environment.mjs']) {
     await copyFile(join(root, 'apps/desktop/scripts', filename), join(scripts, filename))
   }
   // Only command forwarding and parsing are under test; all external work fails closed.

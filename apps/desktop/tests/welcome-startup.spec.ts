@@ -44,6 +44,10 @@ const state = vi.hoisted(() => ({
   nativeTheme: { themeSource: 'system', shouldUseDarkColors: false, on: vi.fn(), removeListener: vi.fn() },
 }))
 
+vi.mock('../src/locale-cache.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/locale-cache.ts')>(),
+  writeDesktopLocaleCache: vi.fn(),
+}))
 vi.mock('../src/crash-report.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/crash-report.ts')>(),
   writeCrashReport: vi.fn(async () => undefined),
@@ -51,6 +55,7 @@ vi.mock('../src/crash-report.ts', async importOriginal => ({
 }))
 vi.mock('electron', () => ({
   clipboard: { writeText: state.copy },
+  safeStorage: { isAsyncEncryptionAvailable: async () => false },
   app: {
     isPackaged: false,
     name: 'Harness',
@@ -84,6 +89,7 @@ vi.mock('electron', () => ({
     moveTop = state.moveTopWorkspace
     hide = vi.fn()
     setBackgroundColor = vi.fn()
+    setTitle = vi.fn()
     show = state.showWorkspace
     showInactive = state.showInactiveWorkspace
     async loadURL(url: string) { state.contents = this.webContents; await state.loadWorkspace(url); this.ready?.() }
@@ -98,7 +104,7 @@ vi.mock('electron', () => ({
     handle: (name: string, callback: (...args: unknown[]) => unknown) => { state.handlers.set(name, callback) },
     on: (name: string, callback: (...args: unknown[]) => void) => { state.listeners.set(name, callback) },
   },
-  dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn() },
+  dialog: { showErrorBox: vi.fn(), showMessageBox: vi.fn().mockResolvedValue({ response: 0 }) },
   Menu: { buildFromTemplate: state.menu, setApplicationMenu: vi.fn() },
   nativeImage: { createFromPath: (path: string) => ({ path }) },
 }))
@@ -115,7 +121,8 @@ vi.mock('../src/project-manager.ts', () => ({ DesktopProjectManager: class {
   applyRelease = vi.fn(async () => {})
   canRecoverProfile = vi.fn(() => true)
 } }))
-vi.mock('../src/host-process.ts', () => ({
+vi.mock('../src/host-process.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/host-process.ts')>(),
   DesktopHostProcess: class {
     start = state.startHost
     stop = state.stopHost

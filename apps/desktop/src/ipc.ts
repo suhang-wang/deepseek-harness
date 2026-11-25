@@ -93,6 +93,8 @@ export interface DesktopUpdatePresentation {
 export interface DshDesktopProductApi {
   readonly fileActions: DesktopFileActions
   readonly protocolVersion: 1
+  /** Company-qualified title for the active workspace, when the package serves multiple companies. */
+  readonly brandTitle?: string
   readonly browser: DesktopBrowserBridge
   readonly fileDrag: DesktopFileDrag
   readonly keyboard: DesktopKeyboardApi

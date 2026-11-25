@@ -1,0 +1,18 @@
+{
+  "appId": "com.example.harness.enterprise",
+  "productName": "Example Enterprise Workspace",
+  "protocolScheme": "example-harness-enterprise",
+  "serviceOrigin": "https://company-a.example.com",
+  "companies": [
+    {
+      "companyId": "company-a",
+      "displayName": "Company A",
+      "serviceOrigin": "https://company-a.example.com"
+    },
+    {
+      "companyId": "company-b",
+      "displayName": "Company B",
+      "serviceOrigin": "https://company-b.example.com"
+    }
+  ]
+}

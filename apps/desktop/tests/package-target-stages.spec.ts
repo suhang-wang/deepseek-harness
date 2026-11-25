@@ -1,10 +1,11 @@
 import { writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 import { packageTarget, parseDesktopPackageInvocation } from '../scripts/package-target.ts'
 import { withMacOSNotarizationProxy } from '../scripts/macos-notarization-proxy.ts'
 import { packageMacOSArtifacts } from '../scripts/package-macos.ts'
+import { notarizeMacOS } from '../scripts/notarize-macos.mjs'
 import { withWindowsSigningStage } from '../scripts/windows-signing-stage.mjs'
 import { prepareWindowsSignatureCacheDirectory } from '../scripts/windows-signature-cache-directory.mjs'
 
@@ -38,7 +39,7 @@ function supervisor(failure?: string) {
   vi.stubEnv('npm_execpath', 'fixture-pnpm.cjs')
   const stages: string[] = []
   const run = { directory: 'fixture-record', finish: vi.fn(),
-    run: vi.fn(async (stage: string, _executable: string, _args: readonly string[], _options: { env: NodeJS.ProcessEnv }) => {
+    run: vi.fn(async (stage: string, _executable: string, _args: readonly string[], _options: { env: NodeJS.ProcessEnv; cwd?: string }) => {
       stages.push(stage)
       if (failure !== undefined && (stage === failure || stage.startsWith(`${failure} `))) throw new Error('stage refused')
     }) }
@@ -257,6 +258,126 @@ it('checks the assembled macOS runtime before notarizing and recording the relea
   await packageTarget(parseDesktopPackageInvocation(['mac-arm64'], 'darwin', 'arm64'), environment, run)
   expect(packageMacOSArtifacts).toHaveBeenCalledOnce()
   expect(writeFileSync).toHaveBeenCalledOnce()
+})
+
+it.each(['mac-arm64', 'win-x64'] as const)('packs four adjacent enterprise packages and seals the approved origin for %s', async (target) => {
+  const { run, stages } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation([
+    target, '--unsigned', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+    '--enterprise-service-origin', 'https://127.0.0.1:3443',
+  ], target === 'win-x64' ? 'win32' : 'darwin', target === 'win-x64' ? 'x64' : 'arm64'), {
+    ...environment, DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://attacker.example',
+  }, run)
+  expect(stages).toContain('run build')
+  expect(stages.filter(stage => stage.includes('pack --pack-destination') && stage.includes('harness-'))).toEqual([
+    expect.stringContaining('packages/harness-identity pack --pack-destination'),
+    expect.stringContaining('packages/harness-provider pack --pack-destination'),
+    expect.stringContaining('packages/harness-ui pack --pack-destination'),
+    expect.stringContaining('packages/harness-bundle pack --pack-destination'),
+  ])
+  const enterprisePack = run.run.mock.calls.find(call => call[0].includes('packages/harness-bundle pack'))!
+  expect(enterprisePack[3].env).toMatchObject({
+    DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://127.0.0.1:3443',
+  })
+  expect(enterprisePack[3].cwd).toContain('enterprise-package-input')
+  expect(enterprisePack[0]).toContain(join('enterprise', 'companies', 'com.example.test', 'targets', target, 'packed', 'enterprise'))
+  expect(stages[0]).toBe('run build --profile local')
+  expect(stages.some(stage => stage.startsWith('exec tsx apps/desktop/scripts/pack-local-packages.ts'))).toBe(true)
+  expect(stages.some(stage => stage.startsWith('run sign:primary-runtime'))).toBe(false)
+  const dshPreparation = run.run.mock.calls.find(call => call[0] === 'run prepare:dsh')!
+  expect(dshPreparation[3].env).toMatchObject({ DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://127.0.0.1:3443' })
+  expect(run.run.mock.calls.find(call => call[0] === 'run prepare:packages')![3].env).toHaveProperty('DSH_DESKTOP_ENTERPRISE_MODE', '1')
+  expect(writeFileSync).not.toHaveBeenCalled()
+})
+
+it.each(['enterprise', 'runtime'] as const)('drains parallel Windows work after %s failure before any later enterprise pack', async (failed) => {
+  const { run, stages } = supervisor()
+  const entered = Promise.withResolvers<undefined>()
+  const enterprise = Promise.withResolvers<undefined>()
+  const runtime = Promise.withResolvers<undefined>()
+  const failure = new Error(`${failed} preparation failed`)
+  let settled = false
+  run.run.mockImplementation(async (stage) => {
+    stages.push(stage)
+    if (stage === 'run build') { entered.resolve(undefined); await enterprise.promise }
+    if (stage === 'run prepare:runtime') await runtime.promise
+  })
+  const invocation = parseDesktopPackageInvocation(['win-x64', '--unsigned', '--enterprise-packages',
+    'apps/desktop/tests/fixtures/enterprise-package-input', '--enterprise-service-origin', 'https://api.example.test'], 'win32', 'x64')
+  const outcome = packageTarget(invocation, environment, run).then(
+    () => { settled = true; return undefined },
+    (error: unknown) => { settled = true; return error },
+  )
+  try {
+    await Promise.race([entered.promise, outcome])
+    expect(stages).toContain('run build')
+    expect(stages).toContain('run prepare:runtime')
+    ;(failed === 'enterprise' ? enterprise : runtime).reject(failure)
+    await setImmediate()
+    expect(settled).toBe(false)
+    ;(failed === 'enterprise' ? runtime : enterprise).resolve(undefined)
+    expect(await outcome).toBe(failure)
+    expect(stages.some(stage => stage.includes('packages/harness-'))).toBe(false)
+    expect(stages.some(stage => stage.startsWith('run sign:') || stage.startsWith('run prepare:packages')
+      || stage.startsWith('run prepare:dsh') || stage.startsWith('exec electron-builder'))).toBe(false)
+    expect(writeFileSync).not.toHaveBeenCalled()
+  } finally {
+    enterprise.resolve(undefined)
+    runtime.resolve(undefined)
+    await outcome
+  }
+})
+
+it.each(['harness-identity', 'harness-provider', 'harness-ui', 'harness-bundle'])
+('stops enterprise preparation when packing %s fails', async (name) => {
+  const { run, stages } = supervisor(`--dir ${join('packages', name)} pack`)
+  const invocation = parseDesktopPackageInvocation(['win-x64', '--unsigned', '--enterprise-packages',
+    'apps/desktop/tests/fixtures/enterprise-package-input', '--enterprise-service-origin', 'https://api.example.test'], 'win32', 'x64')
+  await expect(packageTarget(invocation, environment, run)).rejects.toThrow('stage refused')
+  expect(stages.at(-1)).toContain(`${join('packages', name)} pack`)
+  expect(stages).not.toContain('run prepare:packages')
+  expect(writeFileSync).not.toHaveBeenCalled()
+})
+
+it('uses the renamed enterprise App for a signed directory package', async () => {
+  const { run, stages } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation([
+    'mac-arm64', '--dir', '--enterprise-packages', 'apps/desktop/tests/fixtures/enterprise-package-input',
+    '--enterprise-service-origin', 'https://api.example.test',
+  ], 'darwin', 'arm64'), { ...environment, DSH_DESKTOP_APP_ID: 'org.example.harness',
+    DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness',
+    APPLE_KEYCHAIN_PROFILE: 'fixture-profile', DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise-updates.example.com' }, run)
+  expect(stages).toContain('run build')
+  const appPath: unknown = expect.stringContaining(
+    '/enterprise/companies/org.example.harness/targets/mac-arm64/artifacts/mac-arm64/Example Harness.app',
+  )
+  expect(notarizeMacOS).toHaveBeenCalledWith(expect.objectContaining({ appPath }))
+  expect(packageMacOSArtifacts).not.toHaveBeenCalled()
+})
+
+it('builds unnotarized enterprise artifacts from the company-named application', async () => {
+  const { run, stages } = supervisor()
+  const invocation = parseDesktopPackageInvocation(['mac-arm64', '--skip-notarization', '--enterprise-packages',
+    'apps/desktop/tests/fixtures/enterprise-package-input', '--enterprise-service-origin', 'https://api.example.test'], 'darwin', 'arm64')
+  await packageTarget(invocation, { ...environment, DSH_DESKTOP_APP_ID: 'org.example.harness',
+    DSH_DESKTOP_ENTERPRISE_PROTOCOL_SCHEME: 'example-harness', DSH_DESKTOP_ENTERPRISE_PRODUCT_NAME: 'Example Harness' }, run)
+  const artifacts = stages.filter(stage => stage.includes('--prepackaged'))
+  expect(artifacts).toHaveLength(2)
+  for (const stage of artifacts) expect(stage).toContain(join('unnotarized-artifacts', 'mac-arm64', 'Example Harness.app'))
+  expect(writeFileSync).not.toHaveBeenCalled()
+})
+
+it('does not let ambient enterprise settings change an official package', async () => {
+  const { run, stages } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation(['mac-arm64', '--unsigned'], 'darwin', 'arm64'), {
+    ...environment, DSH_DESKTOP_ENTERPRISE_MODE: '1', DSH_ENTERPRISE_SERVICE_ORIGIN: 'https://attacker.example',
+  }, run)
+  expect(stages).not.toContain('run build')
+  expect(stages.some(stage => stage.includes('harness-bundle pack'))).toBe(false)
+  for (const call of run.run.mock.calls) {
+    expect(call[3].env).not.toHaveProperty('DSH_DESKTOP_ENTERPRISE_MODE')
+    expect(call[3].env).not.toHaveProperty('DSH_ENTERPRISE_SERVICE_ORIGIN')
+  }
 })
 
 it.each([

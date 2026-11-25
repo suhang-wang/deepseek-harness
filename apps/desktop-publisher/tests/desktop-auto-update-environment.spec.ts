@@ -12,6 +12,94 @@ import {
 const RELEASE_ID = '0123456789abcdef0123456789abcdef'
 
 describe('desktop auto-update environment', () => {
+  it('requires an explicit enterprise feed and keeps enterprise paths separate from official updates', () => {
+    const enterprise = { DSH_DESKTOP_ENTERPRISE_MODE: '1', DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+      DOWNLOAD_TEST_ORIGIN: 'https://official.example.com' }
+    expect(() => resolveDesktopAutoUpdateConfig(enterprise, 'darwin', 'arm64'))
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
+    expect(resolveDesktopAutoUpdateConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com' }, 'darwin', 'arm64')).toMatchObject({
+      publicUrl: `https://enterprise.example.com/dsh-enterprise/${RELEASE_ID}/feeds/mac-arm64/`,
+      keyPrefix: `dsh-enterprise/${RELEASE_ID}/feeds/mac-arm64`,
+      binaryKeyPrefix: `dsh-enterprise/${RELEASE_ID}/bin/mac-arm64`,
+    })
+    expect(() => resolveDesktopAutoUpdateConfig({ ...enterprise, DSH_DESKTOP_AUTO_UPDATE_ENV: 'production' }, 'darwin', 'arm64'))
+      .toThrow(/DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN/u)
+    expect(() => resolveDesktopAutoUpdateConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://download.deepseek.com' }, 'darwin', 'arm64'))
+      .toThrow(/official DeepSeek download host/u)
+    expect(() => resolveDesktopAutoUpdateConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'http://enterprise.example.com' }, 'darwin', 'arm64'))
+      .toThrow(/HTTPS origin/u)
+    expect(() => resolveDesktopUploadConfig({ ...enterprise,
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com',
+      DOWNLOAD_TEST_COS_BUCKET: 'official-bucket' }, 'darwin', 'arm64'))
+      .toThrow(/enterprise upload requires/u)
+  })
+  it('keeps custom enterprise app IDs on separate feeds from legacy and official packages', () => {
+    const base = { DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com', DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID }
+    const multi = resolveDesktopAutoUpdateConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.ruqinba.multi' }, 'darwin', 'arm64')
+    const single = resolveDesktopAutoUpdateConfig({ ...base, DSH_DESKTOP_APP_ID: 'com.ruqinba.single' }, 'darwin', 'arm64')
+    const legacy = resolveDesktopAutoUpdateConfig({ ...base,
+      DSH_DESKTOP_APP_ID: 'com.deepseek.harness.enterprise.local' }, 'darwin', 'arm64')
+    const official = resolveDesktopAutoUpdateConfig({ DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+      DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com' }, 'darwin', 'arm64')
+    expect(multi.keyPrefix).toBe(`dsh-enterprise/com.ruqinba.multi/${RELEASE_ID}/feeds/mac-arm64`)
+    expect(multi.keyPrefix).not.toBe(single.keyPrefix)
+    expect(legacy.keyPrefix).toBe(`dsh-enterprise/${RELEASE_ID}/feeds/mac-arm64`)
+    expect(official.keyPrefix).toBe(`dsh-desk/${RELEASE_ID}/feeds/mac-arm64`)
+  })
+
+  it.each(['', ' ', '\t\n'])('rejects blank enterprise app ID %j', (appId) => {
+    expect(() => resolveDesktopAutoUpdateConfig({
+      DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com',
+      DSH_DESKTOP_APP_ID: appId,
+      DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+    }, 'darwin', 'arm64')).toThrow(/DSH_DESKTOP_APP_ID must be set to a non-empty value/u)
+  })
+
+  it.each([
+    'enterprise', '.com.example', 'com.example.', 'com..example', 'com.example_app', 'com.example app',
+    '../dsh-desk', 'com.example/../../dsh-desk', 'com.example\\..\\dsh-desk',
+    'com.example%2f..%2fdsh-desk', 'com.example?channel=stable', 'com.example#fragment',
+    'com.example\napp', 'com.example\0app',
+  ])('rejects unsafe or invalid enterprise app ID %j in every deployment', (appId) => {
+    for (const deployment of ['test', 'production']) {
+      expect(() => resolveDesktopAutoUpdateConfig({
+        DSH_DESKTOP_ENTERPRISE_MODE: '1',
+        DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com',
+        DSH_DESKTOP_AUTO_UPDATE_ENV: deployment,
+        DSH_DESKTOP_APP_ID: appId,
+        DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+      }, 'darwin', 'arm64')).toThrow(/DSH_DESKTOP_APP_ID must be a reverse-DNS identifier/u)
+    }
+  })
+
+  it.each(['test', 'production'])('trims valid enterprise app IDs for %s feeds and binaries', (deployment) => {
+    const prefix = `dsh-enterprise/com.Example.app-1${deployment === 'test' ? `/${RELEASE_ID}` : ''}`
+    expect(resolveDesktopAutoUpdateConfig({
+      DSH_DESKTOP_ENTERPRISE_MODE: '1',
+      DSH_DESKTOP_ENTERPRISE_UPDATE_ORIGIN: 'https://enterprise.example.com',
+      DSH_DESKTOP_AUTO_UPDATE_ENV: deployment,
+      DSH_DESKTOP_UPDATE_CHANNEL: 'stable',
+      DSH_DESKTOP_APP_ID: ' com.Example.app-1 ',
+      DOWNLOAD_TEST_RELEASE_ID: RELEASE_ID,
+    }, 'win32', 'x64')).toMatchObject({
+      publicUrl: `https://enterprise.example.com/${prefix}/feeds/win-x64/`,
+      keyPrefix: `${prefix}/feeds/win-x64`,
+      binaryKeyPrefix: `${prefix}/bin/win-x64/stable`,
+    })
+  })
+
+  it('ignores enterprise app IDs outside enterprise mode', () => {
+    expect(resolveDesktopAutoUpdateConfig({
+      DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
+      DSH_DESKTOP_APP_ID: '../dsh-enterprise',
+    }, 'win32', 'x64').publicUrl).toBe('https://download.deepseek.com/dsh-desk/feeds/win-x64/')
+  })
+
   it.each([undefined, 'test'])('requires a release ID for deployment %s', (deployment) => {
     const environment = { DSH_DESKTOP_AUTO_UPDATE_ENV: deployment, DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com',
       DOWNLOAD_TEST_COS_BUCKET: 'test-bucket' }

@@ -2,6 +2,10 @@
 
 export const en = {
   cliCommandMenu: 'Manage dsh Command…',
+  switchCompanyMenu: 'Switch company…',
+  restartAndSwitch: 'Restart and switch',
+  switchCompanyTitle: 'Switch to {company}',
+  switchCompanyDetail: 'The client will restart and running tasks will be interrupted.',
   cliCommandTitle: 'Manage dsh Command',
   cliCommandLocation: 'Desktop command: {path}',
   cliCommandSelected: 'Current dsh command: {path}',
@@ -197,6 +201,10 @@ export type DesktopMessages = { readonly [Key in keyof typeof en]: string }
 
 export const zh = {
   cliCommandMenu: '管理 dsh 命令…',
+  switchCompanyMenu: '切换公司…',
+  restartAndSwitch: '重启并切换',
+  switchCompanyTitle: '切换到 {company}',
+  switchCompanyDetail: '客户端会重启，当前运行中的任务会中断。',
   cliCommandTitle: '管理 dsh 命令',
   cliCommandLocation: 'Desktop 命令：{path}',
   cliCommandSelected: '当前 dsh 命令：{path}',
@@ -390,6 +398,10 @@ export const zh = {
 /** Japanese copy, checked against the English keys. */
 export const ja = {
   cliCommandMenu: 'dsh コマンドを管理…',
+  switchCompanyMenu: '会社を切り替える…',
+  restartAndSwitch: '再起動して切り替える',
+  switchCompanyTitle: '{company} に切り替える',
+  switchCompanyDetail: 'クライアントが再起動し、実行中のタスクは中断されます。',
   cliCommandTitle: 'dsh コマンドを管理',
   cliCommandLocation: 'デスクトップコマンド: {path}',
   cliCommandSelected: '現在の dsh コマンド: {path}',
@@ -583,6 +595,10 @@ export const ja = {
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
   cliCommandMenu: 'Administrar el comando dsh…',
+  switchCompanyMenu: 'Cambiar de empresa…',
+  restartAndSwitch: 'Reiniciar y cambiar',
+  switchCompanyTitle: 'Cambiar a {company}',
+  switchCompanyDetail: 'El cliente se reiniciará y se interrumpirán las tareas en ejecución.',
   cliCommandTitle: 'Administrar el comando dsh',
   cliCommandLocation: 'Comando de escritorio: {path}',
   cliCommandSelected: 'Comando dsh actual: {path}',
@@ -776,6 +792,10 @@ export const es = {
 /** French dictionary, checked against the English keys. */
 export const fr = {
   cliCommandMenu: 'Gérer la commande dsh…',
+  switchCompanyMenu: 'Changer d’entreprise…',
+  restartAndSwitch: 'Redémarrer et changer',
+  switchCompanyTitle: 'Passer à {company}',
+  switchCompanyDetail: 'Le client redémarrera et les tâches en cours seront interrompues.',
   cliCommandTitle: 'Gérer la commande dsh',
   cliCommandLocation: 'Commande de bureau : {path}',
   cliCommandSelected: 'Commande dsh actuelle : {path}',
@@ -969,6 +989,10 @@ export const fr = {
 /** German dictionary, checked against the English keys. */
 export const de = {
   cliCommandMenu: 'dsh-Befehl verwalten…',
+  switchCompanyMenu: 'Unternehmen wechseln…',
+  restartAndSwitch: 'Neu starten und wechseln',
+  switchCompanyTitle: 'Zu {company} wechseln',
+  switchCompanyDetail: 'Der Client wird neu gestartet und laufende Aufgaben werden unterbrochen.',
   cliCommandTitle: 'dsh-Befehl verwalten',
   cliCommandLocation: 'Desktop-Befehl: {path}',
   cliCommandSelected: 'Aktueller dsh-Befehl: {path}',
@@ -1162,6 +1186,10 @@ export const de = {
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
   cliCommandMenu: 'Управление командой dsh…',
+  switchCompanyMenu: 'Сменить компанию…',
+  restartAndSwitch: 'Перезапустить и сменить',
+  switchCompanyTitle: 'Переключиться на {company}',
+  switchCompanyDetail: 'Клиент перезапустится, а выполняемые задачи будут прерваны.',
   cliCommandTitle: 'Управление командой dsh',
   cliCommandLocation: 'Команда Desktop: {path}',
   cliCommandSelected: 'Текущая команда dsh: {path}.',
@@ -1355,6 +1383,10 @@ export const ru = {
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
   cliCommandMenu: 'Gerenciar comando dsh…',
+  switchCompanyMenu: 'Mudar de empresa…',
+  restartAndSwitch: 'Reiniciar e mudar',
+  switchCompanyTitle: 'Mudar para {company}',
+  switchCompanyDetail: 'O cliente será reiniciado e as tarefas em execução serão interrompidas.',
   cliCommandTitle: 'Gerenciar comando dsh',
   cliCommandLocation: 'Comando da área de trabalho: {path}',
   cliCommandSelected: 'Comando dsh atual: {path}',
@@ -1553,30 +1585,51 @@ export interface DesktopLocale {
   readonly messages: DesktopMessages
 }
 
-/** Resolve Electron's locale to one shipped Desktop dictionary. */
-export function resolveDesktopLocale(locale: string): DesktopLocale {
+/** Resolve Electron's locale to one shipped Desktop dictionary with packaged branding. */
+export function resolveDesktopLocale(locale: string, productName = 'DeepSeek Harness'): DesktopLocale {
   const primary = locale.toLowerCase().split('-')[0]
   if (primary !== undefined && Object.hasOwn(dictionaries, primary)) {
     const id = primary as keyof typeof dictionaries
-    return { id: id === 'zh' ? 'zh-CN' : id, messages: dictionaries[id] }
+    return { id: id === 'zh' ? 'zh-CN' : id, messages: brandedMessages(dictionaries[id], productName) }
   }
-  return { id: 'en', messages: en }
+  return { id: 'en', messages: brandedMessages(en, productName) }
+}
+
+/**
+ * Replace the official product name in shell-owned copy for a company build.
+ * Model and provider names are not touched because they never contain the
+ * product name.
+ * @param messages - Selected shell dictionary.
+ * @param productName - Packaged product name; the official name keeps the original tables.
+ * @returns the dictionary with product branding applied.
+ */
+function brandedMessages(messages: DesktopMessages, productName: string): DesktopMessages {
+  if (productName === 'DeepSeek Harness') return messages
+  const branded: { -readonly [Key in keyof DesktopMessages]: string } = { ...messages }
+  for (const key of Object.keys(branded) as (keyof DesktopMessages)[]) {
+    branded[key] = branded[key]
+      .replaceAll('DeepSeek Harness Enterprise', () => productName)
+      .replaceAll('DeepSeek Harness 企业版', () => productName)
+      .replaceAll('DeepSeek Harness', () => productName)
+  }
+  return branded
 }
 
 /**
  * Choose a built-in dictionary from the shared preference, then ordered OS languages.
  * @param preference - explicit locale.preference, or null when no language was selected.
  * @param languages - operating-system languages in preference order.
+ * @param productName - packaged product name used to brand shell copy.
  * @returns the supported dictionary, falling back to English.
  */
-export function resolveDesktopStartupLocale(preference: string | null, languages: readonly string[]): DesktopLocale {
+export function resolveDesktopStartupLocale(preference: string | null, languages: readonly string[], productName = 'DeepSeek Harness'): DesktopLocale {
   const selected = preference?.toLowerCase()
-  if (selected !== undefined && Object.hasOwn(dictionaries, selected)) return resolveDesktopLocale(selected)
+  if (selected !== undefined && Object.hasOwn(dictionaries, selected)) return resolveDesktopLocale(selected, productName)
   for (const language of languages) {
     const primary = language.toLowerCase().split('-')[0]
-    if (primary !== undefined && Object.hasOwn(dictionaries, primary)) return resolveDesktopLocale(primary)
+    if (primary !== undefined && Object.hasOwn(dictionaries, primary)) return resolveDesktopLocale(primary, productName)
   }
-  return resolveDesktopLocale('en')
+  return resolveDesktopLocale('en', productName)
 }
 
 /** Replace named placeholders in one locale-owned message. */

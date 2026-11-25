@@ -14,6 +14,7 @@ export interface DesktopTargetBuildPaths {
   readonly packedDsh: string
   readonly packedVendor: string
   readonly packedLandlock: string
+  readonly packedEnterprise: string
   readonly downloads: string
   readonly pnpmStore: string
 }
@@ -34,8 +35,8 @@ export function resolveDesktopBuildTarget(
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param target - Supported Desktop target name.
- * @param environment - Packaging environment with an optional absolute cache directory.
- * @returns Target paths plus shared download and package caches.
+ * @param environment - Packaging environment selecting the edition, company app ID and optional absolute cache directory.
+ * @returns Edition- and company-specific target paths plus shared download and package caches.
  */
 export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget, environment?: NodeJS.ProcessEnv): DesktopTargetBuildPaths
 

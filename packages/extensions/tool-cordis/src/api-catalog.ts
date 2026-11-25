@@ -3066,6 +3066,21 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'readonly allowedHostPlugins?: readonly { readonly name: string; readonly version: string; readonly path: string }[]',
+        description: 'Optional launcher-owned package allowlist for a managed Host profile.',
+        parameters: [],
+      },
+      {
+        signature: 'readonly trustedHostPackages?: readonly { readonly name: string; readonly version: string; readonly path: string }[]',
+        description: 'Signed runtime packages against which every declared Host dependency is verified.',
+        parameters: [],
+      },
+      {
+        signature: 'readonly enterpriseServiceOrigin?: string',
+        description: 'Native Desktop\'s signed HTTPS service origin for enterprise identity and provider rows.',
+        parameters: [],
+      },
+      {
         signature: 'readonly overlayPaths: readonly string[]',
         description: 'Absolute command-line overlay files in argv order, read on every composition and applied above profile and home patches.',
         parameters: [],

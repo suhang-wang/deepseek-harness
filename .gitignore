@@ -51,5 +51,8 @@ worktrees/
 .typert-*/
 native/system/test/bin/
 
+# Local Harness run state and build history.
+.harness/local/
+
 # Generated company-signed CUA release record.
 /packages/experimental/cua-macos/cua-helper.json
