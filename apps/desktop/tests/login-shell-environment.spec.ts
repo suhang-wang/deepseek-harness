@@ -56,7 +56,7 @@ function readEnvironment(
   const controller = new AbortController()
   const signal = options.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, options.signal])
   const settled = readDesktopLoginShellEnvironment(base, config, { ...options, signal })
-  const entry = { abort: () => controller.abort(), settled }
+  const entry = { abort: () => { controller.abort() }, settled }
   activeReads.add(entry)
   void settled.then(() => activeReads.delete(entry), () => activeReads.delete(entry))
   return settled
@@ -68,7 +68,7 @@ function waitForChild(pidFile: string): Promise<number> {
     const watcher = watch(dirname(pidFile), { signal }, (_event, filename) => {
       if (filename?.toString() === basename(pidFile)) read()
     })
-    const onAbort = (): void => reject(signal.reason)
+    const onAbort = (): void => { reject(signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason))) }
     signal.addEventListener('abort', onAbort, { once: true })
     function cleanup(): void {
       signal.removeEventListener('abort', onAbort)
@@ -79,7 +79,10 @@ function waitForChild(pidFile: string): Promise<number> {
         const pid = Number(readFileSync(pidFile, 'utf8'))
         if (pid > 0) { cleanup(); resolve(pid) }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { cleanup(); reject(error) }
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          cleanup()
+          reject(error instanceof Error ? error : new Error(String(error)))
+        }
       }
     }
     read()
