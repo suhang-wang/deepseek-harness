@@ -18,6 +18,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import SubagentRuntime, { type SubagentRunId } from '@deepseek-ai/dsh-subagent'
 import * as HooksClaude from '@deepseek-ai/dsh-hooks-claude-code'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
+import { COVERAGE_TEST_TIMEOUT_ENV, coverageTestTimeoutOptions } from '../../../../scripts/coverage-partitions.ts'
 
 /**
  * Full-loop bridge tests: a scripted mock MODEL drives the REAL agent loop + REAL
@@ -28,6 +29,8 @@ import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent
  */
 
 const dirs: string[] = []
+const laneTestTimeoutMs = coverageTestTimeoutOptions(process.env[COVERAGE_TEST_TIMEOUT_ENV]).testTimeout ?? 5_000
+const bridgeTestTimeoutMs = Math.max(30_000, laneTestTimeoutMs)
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
 function subagentCarrier(ctx: Context) {
@@ -83,7 +86,7 @@ function events(agent: Agent): readonly SessionEvent[] {
  * await directly; polling for the observable EFFECT is robust under load, where a
  * single fixed sleep flakes ("async state is not synchronous state").
  */
-async function waitFor(predicate: () => boolean, timeout = 5000, interval = 10): Promise<void> {
+async function waitFor(predicate: () => boolean, timeout = bridgeTestTimeoutMs - 5_000, interval = 10): Promise<void> {
   const deadline = Date.now() + timeout
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('waitFor: condition not met before deadline')
@@ -91,7 +94,7 @@ async function waitFor(predicate: () => boolean, timeout = 5000, interval = 10):
   }
 }
 
-describe('unmatched hooks and directory recovery', () => {
+describe('unmatched hooks and directory recovery', { timeout: bridgeTestTimeoutMs }, () => {
   it.each([
     {},
     { PreToolUse: [{ matcher: 'AnotherTool', hooks: [{ type: 'command', command: 'exit 1' }] }] },
@@ -121,7 +124,7 @@ describe('unmatched hooks and directory recovery', () => {
   })
 })
 
-describe('hooks-claude-code bridge — UserPromptSubmit', () => {
+describe('hooks-claude-code bridge — UserPromptSubmit', { timeout: bridgeTestTimeoutMs }, () => {
   it('a UserPromptSubmit hook that exits 2 closes a blocked turn without a step', async () => {
     // UserPromptSubmit ignores its malformed matcher field, then exit 2 blocks
     // with the reason on stderr.
@@ -166,7 +169,7 @@ describe('hooks-claude-code bridge — UserPromptSubmit', () => {
   })
 })
 
-describe('hooks-claude-code bridge — PreToolUse', () => {
+describe('hooks-claude-code bridge — PreToolUse', { timeout: bridgeTestTimeoutMs }, () => {
   it('a matching PreToolUse hook that exits 2 denies the tool (isError result), tool never runs', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
     dirs.push(dir)
@@ -213,7 +216,7 @@ describe('hooks-claude-code bridge — PreToolUse', () => {
   })
 })
 
-describe('hooks-claude-code bridge — PostToolUse', () => {
+describe('hooks-claude-code bridge — PostToolUse', { timeout: bridgeTestTimeoutMs }, () => {
   it('a PostToolUse hook that blocks (exit 2) turns the result into an isError with feedback', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
     dirs.push(dir)
@@ -282,7 +285,7 @@ describe('hooks-claude-code bridge — PostToolUse', () => {
   })
 })
 
-describe('hooks-claude-code bridge — SessionStart', () => {
+describe('hooks-claude-code bridge — SessionStart', { timeout: bridgeTestTimeoutMs }, () => {
   it('a SessionStart hook injects additionalContext the first request sees', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
     dirs.push(dir)
@@ -307,7 +310,7 @@ describe('hooks-claude-code bridge — SessionStart', () => {
   })
 })
 
-describe('hooks-claude-code bridge — SubagentStart / SubagentStop (observe)', () => {
+describe('hooks-claude-code bridge — SubagentStart / SubagentStop (observe)', { timeout: bridgeTestTimeoutMs }, () => {
   it('runs SubagentStart and SubagentStop hooks when the subagent lifecycle events fire', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
     dirs.push(dir)
@@ -382,7 +385,7 @@ describe('hooks-claude-code bridge — SubagentStart / SubagentStop (observe)', 
   })
 })
 
-describe('hooks-claude-code bridge — load resilience', () => {
+describe('hooks-claude-code bridge — load resilience', { timeout: bridgeTestTimeoutMs }, () => {
   it('a missing config file registers no hooks and does not crash the loop', async () => {
     const adapter = new MockAdapter([textResponse('fine')])
     const ctx = new Context()

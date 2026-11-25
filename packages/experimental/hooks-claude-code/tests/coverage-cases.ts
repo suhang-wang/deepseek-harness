@@ -27,6 +27,8 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 const testToolSignal = new AbortController().signal
+const HOOK_PROCESS_TIMEOUT_MS = 10_000
+const HOOK_PROCESS_TEST_TIMEOUT_MS = HOOK_PROCESS_TIMEOUT_MS + 5_000
 
 /** Targeted branch coverage for the CC bridge: option arms, warn paths, no-agent
  * fallbacks, contextFrom-empty, and the detached-listener catch handlers. */
@@ -59,7 +61,7 @@ async function harness(configPath: string, adapter: MockAdapter, opts: HarnessOp
   if (opts.sessionRoot !== undefined) await ctx.plugin(JsonlSessionPersistence, { root: opts.sessionRoot })
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(LocalSubprocessRuntime)
-  await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
+  await ctx.plugin(LocalBashExecutor, { timeoutMs: HOOK_PROCESS_TIMEOUT_MS })
   await ctx.plugin(HooksClaude, { configPath, ...opts })
   ctx.llm.registerAdapter(['mock'], adapter)
   return ctx
@@ -89,7 +91,7 @@ function childAgentFixture(ctx: Context, id: SessionId, inject: Agent['inject'])
 }
 /** Poll until `predicate` holds or the deadline passes — robust to detached
  * emit-listener hooks firing on a `.then` (a fixed sleep flakes under load). */
-async function waitFor(predicate: () => boolean, timeout = 5000, interval = 10): Promise<void> {
+async function waitFor(predicate: () => boolean, timeout = HOOK_PROCESS_TIMEOUT_MS, interval = 10): Promise<void> {
   const deadline = Date.now() + timeout
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('waitFor: condition not met before deadline')
@@ -101,7 +103,7 @@ export type CoverageGroup = 'config' | 'stop' | 'context' | 'edge-paths'
 
 /** Register independently schedulable slices of the hooks-claude-code coverage matrix. */
 export function defineCoverageCases(group: CoverageGroup): void {
-  if (group === 'config') describe('hooks-claude-code coverage — config option arms + substitution + skip warning', () => {
+  if (group === 'config') describe('hooks-claude-code coverage — config option arms + substitution + skip warning', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('degrades transcript_path to the empty string even with persistence mounted', async () => {
       const d = dir()
       const cap = join(d, 'payload')
@@ -158,7 +160,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'config') describe('hooks-claude-code coverage — empty/no-op outcomes and no-agent paths', () => {
+  if (group === 'config') describe('hooks-claude-code coverage — empty/no-op outcomes and no-agent paths', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a clean exit-0 hook with no output is a no-op (contextFrom empty → next())', async () => {
       const d = dir()
       const s = sh(d, 'noop.sh', '#!/usr/bin/env bash\nexit 0\n')
@@ -225,7 +227,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'stop') describe('hooks-claude-code coverage — Stop continuation + subagent inject/catch', () => {
+  if (group === 'stop') describe('hooks-claude-code coverage — Stop continuation + subagent inject/catch', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a Stop hook that blocks (exit 2) forces the turn to continue (CC dialect)', async () => {
       const d = dir()
       const marker = join(d, 'fired')
@@ -290,7 +292,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'stop') describe('hooks-claude-code coverage — default reasons + sparse payloads', () => {
+  if (group === 'stop') describe('hooks-claude-code coverage — default reasons + sparse payloads', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('PreToolUse deny with EMPTY stderr uses the default reason', async () => {
       const d = dir()
       const s = sh(d, 'deny.sh', '#!/usr/bin/env bash\nexit 2\n') // exit 2, no stderr
@@ -336,7 +338,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'edge-paths') describe('hooks-claude-code coverage — more default/sparse arms', () => {
+  if (group === 'edge-paths') describe('hooks-claude-code coverage — more default/sparse arms', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('UserPromptSubmit deny with EMPTY stderr uses the default block reason', async () => {
       const d = dir()
       const s = sh(d, 'block.sh', '#!/usr/bin/env bash\nexit 2\n')
@@ -383,7 +385,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'edge-paths') describe('hooks-claude-code coverage — schema-bypass apply + unspawnable hook', () => {
+  if (group === 'edge-paths') describe('hooks-claude-code coverage — schema-bypass apply + unspawnable hook', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a direct apply() (schema bypass) with only configPath runs', async () => {
       const d = dir()
       const marker = join(d, 'ran')
@@ -395,7 +397,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       await mountAgentLoopTestDependencies(ctx)
       await ctx.plugin(AgentLoop, { agents: [] })
       await ctx.plugin(LocalSubprocessRuntime)
-      await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
+      await ctx.plugin(LocalBashExecutor, { timeoutMs: HOOK_PROCESS_TIMEOUT_MS })
       // Direct apply with only configPath — bypasses schemastery's defaults, so
       // the bridge must run on the raw minimal config (the per-hook timeout is
       // the protocol lib's reference default, not a config knob).
@@ -439,7 +441,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'context') describe('hooks-claude-code coverage — continue:false, context arm, no-cwd', () => {
+  if (group === 'context') describe('hooks-claude-code coverage — continue:false, context arm, no-cwd', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a {"continue":false} hook is RECORDED as decision "stop" but does not halt the run (TODO(hook-continue-false))', async () => {
     // The extension points cannot yet honor `continue:false` as a hard halt. The log must still record the
     // stop decision while execution and the turn continue normally.
@@ -637,7 +639,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
 
   })
 
-  if (group === 'edge-paths') describe('hooks-claude-code coverage — executor reject + no-open-turn', () => {
+  if (group === 'edge-paths') describe('hooks-claude-code coverage — executor reject + no-open-turn', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('when the bash executor REJECTS a hook run, the hook/result omits exitCode (non-blocking)', async () => {
       const d = dir()
       const s = sh(d, 'h.sh', '#!/usr/bin/env bash\nexit 0\n')
@@ -658,7 +660,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
 
   })
 
-  if (group === 'edge-paths') describe('hooks-claude-code coverage — lifecycle error handling', () => {
+  if (group === 'edge-paths') describe('hooks-claude-code coverage — lifecycle error handling', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a throwing SessionStart inject is contained (logged, agent still runs)', async () => {
       const d = dir()
       const s = sh(d, 'start.sh', '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"x"}}\'\n')
@@ -684,7 +686,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'stop') describe('hooks-claude-code coverage — hook runs in the session cwd, not the server cwd', () => {
+  if (group === 'stop') describe('hooks-claude-code coverage — hook runs in the session cwd, not the server cwd', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('runs an agent-scoped hook in the session workspace even when the executor default differs', async () => {
     // The server launch directory and session cwd deliberately differ. The marker proves the
     // bridge passes `session/new.cwd` instead of falling back to the executor default.
@@ -700,7 +702,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       await ctx.plugin(AgentLoop, { agents: [] })
       // Executor default cwd = serverDir (deliberately NOT the session cwd).
       await ctx.plugin(LocalSubprocessRuntime)
-      await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000, cwd: serverDir })
+      await ctx.plugin(LocalBashExecutor, { timeoutMs: HOOK_PROCESS_TIMEOUT_MS, cwd: serverDir })
       await ctx.plugin(HooksClaude, { configPath: join(serverDir, 'hooks.json') })
       ctx.llm.registerAdapter(['mock'], adapter)
       ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { return [{ type: 'text', text: 'ok' }] } }))
@@ -731,7 +733,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
       await ctx.plugin(AgentLoop, { agents: [] })
       // Executor default cwd = serverDir (deliberately NOT the child session cwd).
       await ctx.plugin(LocalSubprocessRuntime)
-      await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000, cwd: serverDir })
+      await ctx.plugin(LocalBashExecutor, { timeoutMs: HOOK_PROCESS_TIMEOUT_MS, cwd: serverDir })
       await ctx.plugin(HooksClaude, { configPath: join(serverDir, 'hooks.json') })
       ctx.llm.registerAdapter(['mock'], new MockAdapter([]))
 
@@ -767,7 +769,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'config') describe('hooks-claude-code coverage — systemMessage is warned, not surfaced', () => {
+  if (group === 'config') describe('hooks-claude-code coverage — systemMessage is warned, not surfaced', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a hook emitting a systemMessage is logged as not-yet-surfaced', async () => {
       const d = dir()
       const s = sh(d, 'sm.sh', '#!/usr/bin/env bash\necho \'{"systemMessage":"heads up"}\'\n')
@@ -784,7 +786,7 @@ export function defineCoverageCases(group: CoverageGroup): void {
     })
   })
 
-  if (group === 'edge-paths') describe('hooks-claude-code coverage — SessionStart timing is best-effort (no-wait)', () => {
+  if (group === 'edge-paths') describe('hooks-claude-code coverage — SessionStart timing is best-effort (no-wait)', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('does NOT crash or block when the prompt is sent immediately (context is best-effort, may miss the first request)', async () => {
     // Session-start injection is detached, so an immediate prompt need not observe it. Assert only
     // the guaranteed behavior—no crash and a completed turn—without pre-waiting away the race.

@@ -379,7 +379,8 @@ async function expectScriptedBindings(ctx: Context, session: Session, root: stri
   expect(await ghCalls(root)).toContainEqual(['pr', 'view', '9', '--repo', 'octo/demo', '--json', 'url', '--jq', '.url'])
 }
 
-suite('forge-session through a real cordis.yml Loader composition', () => {
+// Each real shell lookup may run for 20s; the outer budget also covers Loader startup and teardown.
+suite('forge-session through a real cordis.yml Loader composition', { timeout: 30_000 }, () => {
   it('uses the CLI environment to resolve an Enterprise host and retains a dismissal after another lookup', async () => {
     const f = await observerFixture()
     const url = 'https://fake.test/octo/demo/pull/9'

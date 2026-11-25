@@ -2366,6 +2366,7 @@ function gitPnpm(
   dir: string, bundle: (name: string, rows: unknown[]) => void,
   installs: Readonly<Record<string, { name: string; version: string; bundle?: false }>>,
 ) {
+  const transport = vi.spyOn(gitTransport, 'chooseGitTransport').mockImplementation(async spec => spec.spec)
   const pnpm = vi.spyOn(operations, 'runProfilePnpm').mockImplementation(async (_context, args, options) => {
     const manifest = readProfileManifest('test', dir)
     const spec = String(args[1])
@@ -2390,7 +2391,7 @@ function gitPnpm(
     writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
     return { exitCode: 0, output: '', truncated: false, logPath: '/install.log' }
   })
-  onTestFinished(() => { pnpm.mockRestore() })
+  onTestFinished(() => { transport.mockRestore(); pnpm.mockRestore() })
   return pnpm
 }
 

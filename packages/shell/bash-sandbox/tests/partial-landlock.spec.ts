@@ -17,6 +17,7 @@ import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ShellExecSpec, ShellExecution, ShellRunResult } from '@deepseek-ai/dsh-shell'
+import { COVERAGE_TEST_TIMEOUT_ENV, coverageTestTimeoutOptions } from '../../../../scripts/coverage-partitions.ts'
 
 /** Historical foreground shorthand over the unified execute() seam. */
 async function run(x: { execute(spec: ShellExecSpec): Promise<ShellExecution> }, spec: ShellExecSpec): Promise<ShellRunResult> {
@@ -35,6 +36,8 @@ const FATAL = `${FATAL_PREFIX}landlock ruleset error: Invalid argument`
 
 const contexts: Context[] = []
 const tempDirs: string[] = []
+const laneTestTimeoutMs = coverageTestTimeoutOptions(process.env[COVERAGE_TEST_TIMEOUT_ENV]).testTimeout ?? 5_000
+const processTestTimeoutMs = Math.max(30_000, laneTestTimeoutMs)
 
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
@@ -75,7 +78,7 @@ async function setup(fatalExit?: number): Promise<SandboxBashExecutor> {
   }
   await ctx.plugin(SandboxPolicyService, { mode: 'read-only', workspaceRoot: process.cwd() })
   await ctx.plugin(LocalSubprocessRuntime)
-  await ctx.plugin(SandboxBashExecutor, { cwd: process.cwd(), timeoutMs: 5_000 })
+  await ctx.plugin(SandboxBashExecutor, { cwd: process.cwd(), timeoutMs: processTestTimeoutMs })
   return ctx.shell as SandboxBashExecutor
 }
 
@@ -89,11 +92,12 @@ async function setupConfiguredRunner(runner: string): Promise<SandboxBashExecuto
   })
   await ctx.plugin(SandboxPolicyService, { mode: 'read-only', workspaceRoot: process.cwd() })
   await ctx.plugin(LocalSubprocessRuntime)
-  await ctx.plugin(SandboxBashExecutor, { cwd: process.cwd(), timeoutMs: 5_000 })
+  await ctx.plugin(SandboxBashExecutor, { cwd: process.cwd(), timeoutMs: processTestTimeoutMs })
   return ctx.shell as SandboxBashExecutor
 }
 
-describe('partial Landlock runner-failure classification', () => {
+// Real process startup shares the host with the full suite; the outer budget also covers fixture teardown.
+describe('partial Landlock runner-failure classification', { timeout: processTestTimeoutMs + 5_000 }, () => {
   it.each(['missing', 'unexecutable', 'missing-interpreter'] as const)('classifies a %s configured runner through the direct spawn error channel', async (kind) => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-unusable-sandbox-runner-'))
     tempDirs.push(dir)

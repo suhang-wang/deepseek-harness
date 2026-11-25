@@ -1,21 +1,32 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import {
   loginShellCandidates, mergeLoginShellEnvironment, parseLoginShellOutput, readDesktopLoginShellEnvironment,
   resolveDesktopLoginShellConfig,
 } from '../src/login-shell-environment.ts'
+import { COVERAGE_TEST_TIMEOUT_ENV, coverageTestTimeoutOptions } from '../../../scripts/coverage-partitions.ts'
 
 const account = vi.hoisted(() => ({ userInfo: vi.fn() }))
 vi.mock('node:os', async importOriginal => ({ ...await importOriginal<typeof import('node:os')>(), userInfo: account.userInfo }))
 
 const DELIMITER = '_DSH_SHELL_ENV_DELIMITER_'
-const config = { timeoutMs: 5_000 }
+const laneTestTimeoutMs = coverageTestTimeoutOptions(process.env[COVERAGE_TEST_TIMEOUT_ENV]).testTimeout ?? 5_000
+const processTestTimeoutMs = Math.max(30_000, laneTestTimeoutMs)
+const config = { timeoutMs: processTestTimeoutMs }
 let directory: string
 
+const activeReads = new Set<{ abort: () => void; settled: Promise<unknown> }>()
+
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'dsh-login-shell-')) })
-afterEach(() => { rmSync(directory, { recursive: true, force: true }) })
+afterEach(async () => {
+  vi.useRealTimers()
+  for (const read of activeReads) read.abort()
+  await Promise.allSettled([...activeReads].map(read => read.settled))
+  activeReads.clear()
+  rmSync(directory, { recursive: true, force: true })
+})
 
 /** Whether `pid` has exited; Linux can keep a killed process as a zombie until its new parent reaps it. */
 function exited(pid: number): boolean {
@@ -35,6 +46,44 @@ function shell(name: string, body: string): string {
   writeFileSync(path, `#!/bin/sh\n[ "$1" = -ilc ] || exit 64\n${body}\nexec /bin/sh -c "$2"\n`)
   chmodSync(path, 0o755)
   return path
+}
+
+function readEnvironment(
+  base: NodeJS.ProcessEnv,
+  config: { timeoutMs: number },
+  options: NonNullable<Parameters<typeof readDesktopLoginShellEnvironment>[2]> = {},
+) {
+  const controller = new AbortController()
+  const signal = options.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, options.signal])
+  const settled = readDesktopLoginShellEnvironment(base, config, { ...options, signal })
+  const entry = { abort: () => controller.abort(), settled }
+  activeReads.add(entry)
+  void settled.then(() => activeReads.delete(entry), () => activeReads.delete(entry))
+  return settled
+}
+
+function waitForChild(pidFile: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const signal = AbortSignal.timeout(processTestTimeoutMs)
+    const watcher = watch(dirname(pidFile), { signal }, (_event, filename) => {
+      if (filename?.toString() === basename(pidFile)) read()
+    })
+    const onAbort = (): void => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+    function cleanup(): void {
+      signal.removeEventListener('abort', onAbort)
+      watcher.close()
+    }
+    function read(): void {
+      try {
+        const pid = Number(readFileSync(pidFile, 'utf8'))
+        if (pid > 0) { cleanup(); resolve(pid) }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { cleanup(); reject(error) }
+      }
+    }
+    read()
+  })
 }
 
 describe('resolveDesktopLoginShellConfig', () => {
@@ -94,12 +143,12 @@ describe('mergeLoginShellEnvironment', () => {
 describe('readDesktopLoginShellEnvironment', () => {
   it('returns the inherited environment on Windows without running a shell', async () => {
     const base = { Path: 'C:\\Windows' }
-    await expect(readDesktopLoginShellEnvironment(base, config, { platform: 'win32', shells: [shell('unused', 'exit 1')] }))
+    await expect(readEnvironment(base, config, { platform: 'win32', shells: [shell('unused', 'exit 1')] }))
       .resolves.toEqual({ environment: base, failures: [] })
   })
 
   it('records a candidate whose path cannot be passed to spawn', async () => {
-    await expect(readDesktopLoginShellEnvironment({}, config, { platform: 'linux', shells: ['/bin/sh\0'] })).resolves.toEqual({
+    await expect(readEnvironment({}, config, { platform: 'linux', shells: ['/bin/sh\0'] })).resolves.toEqual({
       environment: {}, failures: [{ shell: '/bin/sh\0', reason: expect.stringContaining('null bytes') as string }],
     })
   })
@@ -107,13 +156,13 @@ describe('readDesktopLoginShellEnvironment', () => {
   it('skips every candidate when already aborted', async () => {
     const base = { PATH: '/usr/bin' }
     const signal = AbortSignal.abort()
-    await expect(readDesktopLoginShellEnvironment(base, config, { platform: 'darwin', shells: ['/a', '/b'], signal })).resolves
+    await expect(readEnvironment(base, config, { platform: 'darwin', shells: ['/a', '/b'], signal })).resolves
       .toEqual({ environment: base, failures: [{ shell: '/a', reason: 'aborted' }] })
   })
 })
 
 // Stand-in shells are POSIX scripts; Windows returns before spawning.
-describe.skipIf(process.platform === 'win32')('readDesktopLoginShellEnvironment on POSIX', () => {
+describe.skipIf(process.platform === 'win32')('readDesktopLoginShellEnvironment on POSIX', { timeout: processTestTimeoutMs + 10_000 }, () => {
   it('merges variables exported by rc files, ignoring their other output', async () => {
     const login = shell('login', [
       'echo "rc banner"',
@@ -121,13 +170,14 @@ describe.skipIf(process.platform === 'win32')('readDesktopLoginShellEnvironment 
       'read -r answer; export ANSWER="${answer:-eof}"',
       'export PATH="/login/bin:$PATH" MULTI=\'a\nb\' STARTED_IN="$PWD"',
     ].join('\n'))
-    const result = await readDesktopLoginShellEnvironment({ PATH: '/usr/bin:/bin', KEPT: '1' }, config, { platform: 'darwin', shells: [login] })
+    const result = await readEnvironment({ PATH: '/usr/bin:/bin', KEPT: '1' }, config, { platform: 'darwin', shells: [login] })
     expect(result.failures).toEqual([])
     expect(result.environment).toMatchObject({ PATH: '/login/bin:/usr/bin:/bin', KEPT: '1', MULTI: 'a\nb', ANSWER: 'eof' })
     expect(result.environment.STARTED_IN).toBe(homedir())
     expect(result.environment).not.toHaveProperty('DISABLE_AUTO_UPDATE')
   })
 
+  // Five real candidates start sequentially; the per-candidate deadline does not bound their aggregate startup.
   it('records each failing candidate and uses the next one', async () => {
     const candidates = [
       join(directory, 'missing'),
@@ -136,7 +186,7 @@ describe.skipIf(process.platform === 'win32')('readDesktopLoginShellEnvironment 
       shell('silent', 'exit 0'),
       shell('working', 'export FROM=working'),
     ]
-    const result = await readDesktopLoginShellEnvironment({ PATH: '/usr/bin:/bin' }, config, { platform: 'linux', shells: candidates })
+    const result = await readEnvironment({ PATH: '/usr/bin:/bin' }, { timeoutMs: processTestTimeoutMs }, { platform: 'linux', shells: candidates })
     expect(result.environment.FROM).toBe('working')
     expect(result.failures).toEqual([
       { shell: candidates[0], reason: expect.stringContaining('ENOENT') as string },
@@ -144,14 +194,15 @@ describe.skipIf(process.platform === 'win32')('readDesktopLoginShellEnvironment 
       { shell: candidates[2], reason: 'SIGTERM' },
       { shell: candidates[3], reason: 'unparsed' },
     ])
-  })
+  }, Math.max(90_000, processTestTimeoutMs * 5 + 5_000))
 
   it('completes at the closing delimiter while an rc-started child keeps stdout open', async () => {
     const pidFile = join(directory, 'child.pid')
     const detaching = shell('detaching', `sleep 30 & echo $! > '${pidFile}'\nexport FROM=detaching`)
-    const result = await readDesktopLoginShellEnvironment({ PATH: '/usr/bin:/bin' }, config, { platform: 'darwin', shells: [detaching] })
-    const child = Number(readFileSync(pidFile, 'utf8'))
+    const read = readEnvironment({ PATH: '/usr/bin:/bin' }, { timeoutMs: processTestTimeoutMs }, { platform: 'darwin', shells: [detaching] })
+    const child = await waitForChild(pidFile)
     onTestFinished(() => { process.kill(child, 'SIGKILL') })
+    const result = await read
     expect(result.failures).toEqual([])
     expect(result.environment.FROM).toBe('detaching')
     expect(exited(child)).toBe(false)
@@ -161,27 +212,38 @@ describe.skipIf(process.platform === 'win32')('readDesktopLoginShellEnvironment 
     const pidFile = join(directory, 'child.pid')
     const hanging = shell('hanging', `sleep 30 & echo $! > '${pidFile}'; wait`)
     const base = { PATH: '/usr/bin:/bin' }
-    const result = await readDesktopLoginShellEnvironment(base, { timeoutMs: 2_000 }, { platform: 'darwin', shells: [hanging] })
-    expect(result).toEqual({ environment: base, failures: [{ shell: hanging, reason: 'timeout' }] })
-    const child = Number(readFileSync(pidFile, 'utf8'))
-    await vi.waitFor(() => { expect(exited(child)).toBe(true) })
-  })
+    const controller = new AbortController()
+    vi.useFakeTimers()
+    const read = readEnvironment(base, { timeoutMs: 2_000 }, { platform: 'darwin', shells: [hanging], signal: controller.signal })
+    try {
+      const child = await waitForChild(pidFile)
+      await vi.advanceTimersByTimeAsync(2_000)
+      await expect(read).resolves.toEqual({ environment: base, failures: [{ shell: hanging, reason: 'timeout' }] })
+      vi.useRealTimers()
+      await vi.waitFor(() => { expect(exited(child)).toBe(true) }, { timeout: 10_000 })
+    } finally {
+      controller.abort()
+      await read
+      vi.useRealTimers()
+    }
+  }, processTestTimeoutMs + 15_000)
 
   it('ends the running shell group on abort and skips the remaining candidates', async () => {
     const pidFile = join(directory, 'child.pid')
     const hanging = shell('hanging', `sleep 30 & echo $! > '${pidFile}'; wait`)
     const base = { PATH: '/usr/bin:/bin' }
     const controller = new AbortController()
-    const read = readDesktopLoginShellEnvironment(base, config, {
+    const read = readEnvironment(base, { timeoutMs: 30_000 }, {
       platform: 'linux', shells: [hanging, shell('unused', 'export FROM=unused')], signal: controller.signal,
     })
-    const child = await vi.waitFor(() => {
-      const pid = Number(readFileSync(pidFile, 'utf8'))
-      expect(pid).toBeGreaterThan(0)
-      return pid
-    })
-    controller.abort()
-    await expect(read).resolves.toEqual({ environment: base, failures: [{ shell: hanging, reason: 'aborted' }] })
-    await vi.waitFor(() => { expect(exited(child)).toBe(true) })
-  })
+    try {
+      const child = await waitForChild(pidFile)
+      controller.abort()
+      await expect(read).resolves.toEqual({ environment: base, failures: [{ shell: hanging, reason: 'aborted' }] })
+      await vi.waitFor(() => { expect(exited(child)).toBe(true) }, { timeout: 10_000 })
+    } finally {
+      controller.abort()
+      await read
+    }
+  }, processTestTimeoutMs + 20_000)
 })

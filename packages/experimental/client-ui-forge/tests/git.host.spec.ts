@@ -196,7 +196,8 @@ describe('inspectCheckout', () => {
   })
 })
 
-describe.skipIf(!posix)('inspectCheckout with a stand-in Git', () => {
+// The outer budget must exceed the 10s Git deadline, including fixture startup.
+describe.skipIf(!posix)('inspectCheckout with a stand-in Git', { timeout: 15_000 }, () => {
   it('never runs a configured filter, because it reads no working tree file', async () => {
     const root = await directory()
     const repo = await repository(root)

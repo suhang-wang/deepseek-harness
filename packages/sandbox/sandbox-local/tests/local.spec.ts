@@ -21,9 +21,13 @@ import {
 } from '@deepseek-ai/dsh-sandbox-local'
 import type { Config } from '@deepseek-ai/dsh-sandbox-local'
 import { bwrapProfileArgs, landlockProfileArgs, seatbeltProfileArgs } from '../src/profiles.ts'
+import { COVERAGE_TEST_TIMEOUT_ENV, coverageTestTimeoutOptions } from '../../../../scripts/coverage-partitions.ts'
 
 const RO: SandboxPolicy = { mode: 'read-only', workspaceRoot: '/ws' }
 const WW: SandboxPolicy = { mode: 'workspace-write', workspaceRoot: '/ws' }
+const laneTestTimeoutMs = coverageTestTimeoutOptions(process.env[COVERAGE_TEST_TIMEOUT_ENV]).testTimeout ?? 5_000
+const processTestTimeoutMs = Math.max(30_000, laneTestTimeoutMs)
+const processSuiteOptions = { timeout: processTestTimeoutMs + 5_000 }
 
 /** Every temp dir created by this file (fake launchers and runner entries), removed after each test. */
 const tempDirs: string[] = []
@@ -33,7 +37,7 @@ afterEach(() => {
 
 async function setup(config: Config = {}, internals: LocalSandboxProvider['internals'] = {}) {
   const ctx = new Context()
-  await ctx.plugin(LocalSandboxProvider, config)
+  await ctx.plugin(LocalSandboxProvider, { probeTimeoutMs: processTestTimeoutMs, ...config })
   const sandbox = ctx.sandbox as LocalSandboxProvider
   sandbox.internals = internals
   return { ctx, sandbox }
@@ -209,7 +213,7 @@ describe('runnerCommand config', () => {
   )
 })
 
-describe('the platform chains', () => {
+describe('the platform chains', processSuiteOptions, () => {
   it('linux probes bwrap first: a passing probe wraps with the bwrap dialect at full enforcement', async () => {
     const probeBwrap = vi.fn(() => true)
     const probeLandlock = vi.fn(() => 'full' as const)
@@ -294,16 +298,20 @@ describe('the platform chains', () => {
   })
 
   it('a multi-rung chain probes a seatbelt rung like any other (the walk, not the platform table, decides)', async () => {
-    // The product chains reach seatbelt only as darwin's sole (unprobed)
-    // candidate; the probe chain exercises the path it would take in
-    // a grown chain, keeping the default seatbelt probe honest.
-    const exec = fakeSeatbeltExec(0)
+    const exec = '/fake/sandbox-exec'
     const probeBwrap = vi.fn(() => false)
-    const { sandbox } = await setup({}, { chain: ['bwrap', 'seatbelt'], probeBwrap, seatbeltExec: exec })
+    const probeSeatbelt = vi.fn(() => true)
+    const { sandbox } = await setup({}, {
+      chain: ['bwrap', 'seatbelt'],
+      probeBwrap,
+      probeSeatbelt,
+      seatbeltExec: exec,
+    })
     const confined = await sandbox.confine(['true'], RO)
     expect(confined.argv[0]).toBe(exec)
     expect(confined.enforcement).toBe('full')
     expect(probeBwrap).toHaveBeenCalledTimes(1)
+    expect(probeSeatbelt).toHaveBeenCalledWith(exec)
   })
 
   it('a rogue chain entry throws via the probe walk\'s exhaustiveness guard (closed union)', async () => {
@@ -353,7 +361,7 @@ describe('the platform chains', () => {
   })
 })
 
-describe('the default landlock probe (launcher CLI contract)', () => {
+describe('the default landlock probe (launcher CLI contract)', processSuiteOptions, () => {
   it('parses a fully-enforced probe report as full enforcement', async () => {
     const { sandbox } = await setup({}, { platform: 'linux', probeBwrap: () => false, landlockLauncher: fakeLauncher() })
     expect((await sandbox.confine(['true'], RO)).enforcement).toBe('full')
@@ -407,7 +415,7 @@ describe('probeTimeoutMs config', () => {
   }, 30_000)
 })
 
-describe('the default seatbelt probe (sandbox-exec contract)', () => {
+describe('the default seatbelt probe (sandbox-exec contract)', processSuiteOptions, () => {
   // The product chains reach seatbelt only unprobed (darwin's sole
   // candidate), so the default probe's contract is pinned through the provider
   // chain: a grown chain must probe it like any other rung.

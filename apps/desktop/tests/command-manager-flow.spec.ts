@@ -1,15 +1,20 @@
-/** User decisions cross a real worker process; the worker replaces only the OS mutation boundary. */
+/** User decisions cross a real worker process; the fixture replaces OS mutations and shell startup. */
 
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { ExecFileOptions } from 'node:child_process'
 import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron'
 import { DesktopCommandManager } from '../src/command-management.ts'
 import { en, zh, type DesktopMessages } from '../src/locale.ts'
+import { COVERAGE_TEST_TIMEOUT_ENV, coverageTestTimeoutOptions } from '../../../scripts/coverage-partitions.ts'
 
-const external = vi.hoisted(() => ({ shell: null as string | null, cancelAuthorization: false, elevations: 0 }))
+const laneTestTimeoutMs = coverageTestTimeoutOptions(process.env[COVERAGE_TEST_TIMEOUT_ENV]).testTimeout ?? 5_000
+// A flow can inspect, install, and inspect again; each worker call has a 30s deadline and Darwin also reads the login shell.
+const commandFlowTestTimeoutMs = Math.max(110_000, laneTestTimeoutMs + 20_000)
+
+const external = vi.hoisted(() => ({ shell: null as string | null, shellOutput: '', cancelAuthorization: false, elevations: 0 }))
 
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>()
@@ -21,6 +26,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   const { promisify } = await import('node:util')
   const execute = promisify(actual.execFile)
   const invoke = async (file: string, args: string[], options: ExecFileOptions) => {
+    if (file === external.shell) return { stdout: external.shellOutput, stderr: '' }
     if (file !== '/usr/bin/osascript') return execute(file, args, options)
     external.elevations++
     // Exercise AppleScript's real stdout/error transport without authorizing an OS mutation.
@@ -30,7 +36,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFile: Object.assign(vi.fn(), { [promisify.custom]: invoke }) }
 })
 
-afterEach(() => { external.shell = null; external.cancelAuthorization = false; external.elevations = 0 })
+afterEach(() => { external.shell = null; external.shellOutput = ''; external.cancelAuthorization = false; external.elevations = 0 })
 
 async function fixture(options: {
   failure?: string
@@ -57,10 +63,8 @@ async function fixture(options: {
     activeCommand: options.managed && !options.shadowed ? join(root, process.platform === 'win32' ? 'dsh.cmd' : 'dsh') : join(root, 'other-dsh'),
   }
   if (process.platform === 'darwin') {
-    const shell = join(root, 'lookup-shell')
-    await writeFile(shell, '#!/bin/sh\nprintf "\\0DSH_COMMAND\\0"\ncat "$(dirname "$0")/selected-command"\nprintf "\\0"\n', { mode: 0o755 })
-    await writeFile(join(root, 'selected-command'), state.activeCommand + '\n')
-    external.shell = shell
+    external.shell = join(root, 'lookup-shell')
+    external.shellOutput = `\0DSH_COMMAND\0${state.activeCommand}\0`
   }
   await writeFile(join(worker, 'state.json'), JSON.stringify({ state, failure: options.failure, elevate: options.elevate }))
   await writeFile(join(worker, 'command-manager.js'), [
@@ -90,73 +94,75 @@ async function fixture(options: {
   return { manager, show, calls }
 }
 
-it('requires confirmation before replacing an existing command', async () => {
-  const f = await fixture()
-  f.show.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
-    .mockResolvedValueOnce({ response: 1, checkboxChecked: false })
-  await f.manager.show()
-  expect(f.show.mock.calls[1]![0]).toMatchObject({ message: en.cliCommandSwitch, defaultId: 1, cancelId: 1 })
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }])
-})
+describe('command management flow', { timeout: commandFlowTestTimeoutMs }, () => {
+  it('requires confirmation before replacing an existing command', async () => {
+    const f = await fixture()
+    f.show.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+      .mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+    await f.manager.show()
+    expect(f.show.mock.calls[1]![0]).toMatchObject({ message: en.cliCommandSwitch, defaultId: 1, cancelId: 1 })
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }])
+  })
 
-it('passes the displayed fingerprint and reports a stale worker refusal', async () => {
-  const f = await fixture({ failure: 'ESTALE' })
-  f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
-  await f.manager.show()
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }])
-  expect(f.show.mock.lastCall![0].message).toBe(en.cliCommandChanged)
-})
+  it('passes the displayed fingerprint and reports a stale worker refusal', async () => {
+    const f = await fixture({ failure: 'ESTALE' })
+    f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
+    await f.manager.show()
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }])
+    expect(f.show.mock.lastCall![0].message).toBe(en.cliCommandChanged)
+  })
 
-it.each([['en-US', en], ['zh-CN', zh]] as const)('repairs its own selected command without a switch confirmation in %s', async (locale, messages) => {
-  const f = await fixture({ managed: true, messages })
-  f.show.mockResolvedValueOnce({ response: 1, checkboxChecked: false }).mockResolvedValue({ response: 0, checkboxChecked: false })
-  await f.manager.show()
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }, { operation: 'inspect' }])
-  await expect(JSON.stringify(f.show.mock.calls.map(([options]) => ({ message: options.message, buttons: options.buttons })), null, 2) + '\n')
-    .toMatchFileSnapshot(join(import.meta.dirname, 'expected', `command-repair-${locale}.json`))
-})
+  it.each([['en-US', en], ['zh-CN', zh]] as const)('repairs its own selected command without a switch confirmation in %s', async (locale, messages) => {
+    const f = await fixture({ managed: true, messages })
+    f.show.mockResolvedValueOnce({ response: 1, checkboxChecked: false }).mockResolvedValue({ response: 0, checkboxChecked: false })
+    await f.manager.show()
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }, { operation: 'inspect' }])
+    await expect(JSON.stringify(f.show.mock.calls.map(([options]) => ({ message: options.message, buttons: options.buttons })), null, 2) + '\n')
+      .toMatchFileSnapshot(join(import.meta.dirname, 'expected', `command-repair-${locale}.json`))
+  })
 
-it('keeps confirmation when repairing a command shadowed by another installation', async () => {
-  const f = await fixture({ managed: true, shadowed: true })
-  f.show.mockResolvedValue({ response: 1, checkboxChecked: false })
-  await f.manager.show()
-  expect(f.show.mock.calls[1]![0].message).toBe(en.cliCommandSwitch)
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }])
-})
+  it('keeps confirmation when repairing a command shadowed by another installation', async () => {
+    const f = await fixture({ managed: true, shadowed: true })
+    f.show.mockResolvedValue({ response: 1, checkboxChecked: false })
+    await f.manager.show()
+    expect(f.show.mock.calls[1]![0].message).toBe(en.cliCommandSwitch)
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }])
+  })
 
-it.skipIf(process.platform !== 'darwin')('keeps a declined worker response through the AppleScript transport', async () => {
-  const f = await fixture({ failure: 'ESTALE', elevate: true })
-  f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
-  await f.manager.show()
-  expect(external.elevations).toBe(1)
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }, { operation: 'install', expected: 'a'.repeat(64) }])
-  expect(f.show.mock.lastCall![0]).toMatchObject({ message: en.cliCommandChanged, technicalDetails: 'worker declined' })
-})
+  it.skipIf(process.platform !== 'darwin')('keeps a declined worker response through the AppleScript transport', async () => {
+    const f = await fixture({ failure: 'ESTALE', elevate: true })
+    f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
+    await f.manager.show()
+    expect(external.elevations).toBe(1)
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }, { operation: 'install', expected: 'a'.repeat(64) }])
+    expect(f.show.mock.lastCall![0]).toMatchObject({ message: en.cliCommandChanged, technicalDetails: 'worker declined' })
+  })
 
-it.skipIf(process.platform !== 'darwin')('returns without an error dialog when administrator authorization is cancelled', async () => {
-  const f = await fixture({ elevate: true })
-  external.cancelAuthorization = true
-  f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
-  await f.manager.show()
-  expect(external.elevations).toBe(1)
-  expect(f.show).toHaveBeenCalledTimes(2)
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }])
-})
+  it.skipIf(process.platform !== 'darwin')('returns without an error dialog when administrator authorization is cancelled', async () => {
+    const f = await fixture({ elevate: true })
+    external.cancelAuthorization = true
+    f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
+    await f.manager.show()
+    expect(external.elevations).toBe(1)
+    expect(f.show).toHaveBeenCalledTimes(2)
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }, { operation: 'install', expected: 'a'.repeat(64) }])
+  })
 
-it('coalesces repeated menu clicks and keeps update preparation waiting for the active decision', async () => {
-  const f = await fixture()
-  const shown = Promise.withResolvers<undefined>()
-  const choice = Promise.withResolvers<MessageBoxReturnValue>()
-  f.show.mockImplementation(() => { shown.resolve(undefined); return choice.promise })
-  const first = f.manager.show()
-  expect(f.manager.show()).toBe(first)
-  await shown.promise
-  let idle = false
-  const waiting = f.manager.idle().then(() => { idle = true })
-  await Promise.resolve()
-  expect(idle).toBe(false)
-  choice.resolve({ response: 1, checkboxChecked: false })
-  await Promise.all([first, waiting])
-  expect(idle).toBe(true)
-  expect(await f.calls()).toEqual([{ operation: 'inspect' }])
+  it('coalesces repeated menu clicks and keeps update preparation waiting for the active decision', async () => {
+    const f = await fixture()
+    const shown = Promise.withResolvers<undefined>()
+    const choice = Promise.withResolvers<MessageBoxReturnValue>()
+    f.show.mockImplementation(() => { shown.resolve(undefined); return choice.promise })
+    const first = f.manager.show()
+    expect(f.manager.show()).toBe(first)
+    await shown.promise
+    let idle = false
+    const waiting = f.manager.idle().then(() => { idle = true })
+    await Promise.resolve()
+    expect(idle).toBe(false)
+    choice.resolve({ response: 1, checkboxChecked: false })
+    await Promise.all([first, waiting])
+    expect(idle).toBe(true)
+    expect(await f.calls()).toEqual([{ operation: 'inspect' }])
+  })
 })

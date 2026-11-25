@@ -25,6 +25,7 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 const testToolSignal = new AbortController().signal
+const HOOK_PROCESS_TEST_TIMEOUT_MS = 15_000
 
 const dirs: string[] = []
 const contexts: Context[] = []
@@ -73,7 +74,7 @@ export type CoverageGroup = 'prompt' | 'post-tool' | 'result-shape' | 'edge-path
 /** Register independently schedulable slices of the hooks-codex coverage matrix. */
 export function defineCoverageCases(groups: CoverageGroup | readonly CoverageGroup[]): void {
   const selected = new Set(typeof groups === 'string' ? [groups] : groups)
-  if (selected.has('prompt')) describe('hooks-codex coverage — prompt decision mapping', () => {
+  if (selected.has('prompt')) describe('hooks-codex coverage — prompt decision mapping', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('degrades transcript_path to null even with persistence mounted', async () => {
       const d = dir()
       const cap = join(d, 'payload')
@@ -160,7 +161,7 @@ export function defineCoverageCases(groups: CoverageGroup | readonly CoverageGro
     })
   })
 
-  if (selected.has('post-tool')) describe('hooks-codex coverage — post-tool and session context mapping', () => {
+  if (selected.has('post-tool')) describe('hooks-codex coverage — post-tool and session context mapping', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('folds the bridge PostToolUse context onto a downstream canonical value replacement', async () => {
       const d = dir()
       hooks(d, { PostToolUse: [{ hooks: [{ type: 'command', command: sh(d, 'pc.sh', '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"bridge-note"}}\'\n') }] }] })
@@ -251,7 +252,7 @@ export function defineCoverageCases(groups: CoverageGroup | readonly CoverageGro
     })
   })
 
-  if (selected.has('result-shape')) describe('hooks-codex coverage — hook result shape and configuration', () => {
+  if (selected.has('result-shape')) describe('hooks-codex coverage — hook result shape and configuration', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('PreToolUse for a tool call WITHOUT a command arg passes an empty command (commandOf non-object/missing arm)', async () => {
       const d = dir()
       hooks(d, { PreToolUse: [{ hooks: [{ type: 'command', command: sh(d, 'pre.sh', '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n') }] }] })
@@ -385,7 +386,7 @@ export function defineCoverageCases(groups: CoverageGroup | readonly CoverageGro
     })
   })
 
-  if (selected.has('edge-paths')) describe('hooks-codex coverage — matching and no-agent edge paths', () => {
+  if (selected.has('edge-paths')) describe('hooks-codex coverage — matching and no-agent edge paths', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a clean PreToolUse with no decision allows the tool (no deny)', async () => {
       const d = dir()
       hooks(d, { PreToolUse: [{ hooks: [{ type: 'command', command: sh(d, 'ok.sh', '#!/usr/bin/env bash\nexit 0\n') }] }] })
@@ -506,7 +507,7 @@ export function defineCoverageCases(groups: CoverageGroup | readonly CoverageGro
     })
   })
 
-  if (selected.has('payload')) describe('hooks-codex coverage — continuation, payload, and cwd mapping', () => {
+  if (selected.has('payload')) describe('hooks-codex coverage — continuation, payload, and cwd mapping', { timeout: HOOK_PROCESS_TEST_TIMEOUT_MS }, () => {
     it('a blocking Stop hook with EMPTY stderr still forces continuation (no reason required)', async () => {
     // Regression: an exit-2 Stop hook with no stderr yields decision 'deny' +
     // reason undefined; the turn must STILL force-continue, not silently stop.
